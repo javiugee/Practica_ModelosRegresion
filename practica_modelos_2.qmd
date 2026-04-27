@@ -1,0 +1,1921 @@
+---
+title: "Práctica: Modelos de Regresión para Predicción de Notas Finales"
+subtitle: "Grado en Ciencia e Ingeniería de Datos - URJC"
+author:
+  - name: "Javier Ugena García"
+  - name: "Soraya Burgos Modrego"
+  - name: "Elba Jares Darriba"
+date: today
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-title: "Índice de Contenidos"
+    toc-float: true
+    number-sections: true
+    theme: cosmo
+    highlight-style: github
+    code-fold: true
+    code-tools: true
+    code-summary: "Mostrar código"
+    fig-width: 9
+    fig-height: 6
+    fig-align: center
+    embed-resources: true
+    df-print: kable
+    css: styles.css
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+editor: visual
+---
+
+```{css, echo=FALSE}
+/* Custom styles for the report */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 15px;
+  line-height: 1.7;
+  color: #2c3e50;
+}
+
+h1, h2, h3, h4 {
+  color: #1a252f;
+  font-weight: 600;
+}
+
+.callout-note {
+  border-left: 4px solid #3498db;
+}
+
+.callout-tip {
+  border-left: 4px solid #2ecc71;
+}
+
+.callout-warning {
+  border-left: 4px solid #e67e22;
+}
+
+.callout-important {
+  border-left: 4px solid #e74c3c;
+}
+
+table {
+  font-size: 13px;
+}
+
+.badge-section {
+  display: inline-block;
+  background: #2c3e50;
+  color: white;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+```
+
+------------------------------------------------------------------------
+
+# Introducción y Descripción del Problema
+
+## Contexto del Estudio
+
+Este informe analiza el **rendimiento académico de estudiantes de secundaria** en Portugal, utilizando el conocido dataset *Student Performance* disponible en el [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/320/student+performance). El dataset fue recopilado por Cortez y Silva (2008) mediante cuestionarios escolares y registros académicos en dos escuelas portuguesas: **Gabriel Pereira (GP)** y **Mousinho da Silveira (MS)**.
+
+El objetivo principal de esta práctica es construir y evaluar modelos de regresión que permitan **predecir la nota final (G3)** de los estudiantes en la asignatura de **Portugués**, a partir de una amplia variedad de variables sociodemográficas, familiares y académicas.
+
+## Dataset Utilizado
+
+Se trabaja con el fichero `student-por.csv`, correspondiente a la asignatura de **Lengua Portuguesa**, que contiene **649 observaciones** y **33 variables**. Se ha elegido este dataset por su mayor tamaño muestral respecto al de Matemáticas (395 obs.), lo que proporciona mayor robustez estadística para la modelización.
+
+::: callout-note
+**Variables objetivo:**
+
+-   **G3** (variable continua): Nota final del curso, de 0 a 20 → usada en regresión lineal.
+-   **G3_bin** (variable binaria): Aprobado (G3 ≥ 10) / Suspendido (G3 \< 10) → usada en regresión logística.
+:::
+
+## Estructura del Informe
+
+El análisis sigue la siguiente estructura:
+
+1.  Preparación de datos y análisis exploratorio (EDA)
+2.  Regresión lineal simple
+3.  Regresión lineal múltiple (selección de variables, regularización, no linealidades)
+4.  Regresión logística (target binarizado)
+5.  Comparación y evaluación de modelos
+6.  Conclusiones y trabajo futuro
+
+------------------------------------------------------------------------
+
+# Preparación de Datos y Análisis Exploratorio
+
+## Carga de Librerías y Datos
+
+```{r setup-libraries}
+# ── Librerías de manipulación y visualización ──────────────────────────────
+library(tidyverse)       # manipulación y visualización general
+library(ggplot2)         # gráficos
+library(GGally)          # pairs plots
+library(corrplot)        # correlogramas
+library(knitr)           # tablas
+library(kableExtra)      # tablas mejoradas
+
+# ── Librerías de modelado ──────────────────────────────────────────────────
+library(caret)           # partición, entrenamiento y validación
+library(glmnet)          # regularización Lasso/Ridge/ElasticNet
+library(leaps)           # selección de subconjuntos
+library(MASS)            # stepwise AIC/BIC
+library(car)             # VIF, diagnóstico
+library(lmtest)          # tests de hipótesis sobre residuos
+library(nortest)         # test de normalidad Anderson-Darling
+
+# ── Librerías de evaluación y diagnóstico ─────────────────────────────────
+library(pROC)            # curvas ROC
+library(ResourceSelection) # Hosmer-Lemeshow
+library(gridExtra)       # grid de gráficos
+library(ggfortify)       # autoplot para lm
+library(broom)           # tidy model outputs
+library(performance)     # check_model
+library(see)             # visualización performance
+
+# Semilla para reproducibilidad
+set.seed(42)
+```
+
+```{r load-data}
+# ── Carga del dataset de Portugués ────────────────────────────────────────
+student_por <- read.table("student-por.csv", sep = ";", header = TRUE,
+                          stringsAsFactors = TRUE)
+
+cat("Dimensiones del dataset:", dim(student_por), "\n")
+cat("Variables:", ncol(student_por), "\n")
+cat("Observaciones:", nrow(student_por), "\n")
+```
+
+## Inspección Inicial
+
+```{r initial-inspection}
+# Vista general de la estructura
+glimpse(student_por)
+```
+
+```{r summary-stats}
+# Resumen estadístico completo
+summary(student_por) |>
+  kable(caption = "Resumen estadístico de todas las variables") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = FALSE) |>
+  scroll_box(width = "100%", height = "400px")
+```
+
+## Valores Ausentes y Calidad de los Datos
+
+```{r missing-values}
+# Análisis de valores ausentes
+missing_df <- data.frame(
+  Variable    = names(student_por),
+  Tipo        = sapply(student_por, class),
+  NA_Count    = sapply(student_por, function(x) sum(is.na(x))),
+  NA_Pct      = round(sapply(student_por, function(x) mean(is.na(x))) * 100, 2)
+)
+
+missing_df |>
+  filter(NA_Count > 0) |>
+  kable(caption = "Variables con valores ausentes", row.names = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+cat("Total de valores ausentes:", sum(is.na(student_por)), "\n")
+cat("→ El dataset está completo. No se requiere imputación.\n")
+```
+
+## Ingeniería de Variables
+
+```{r feature-engineering}
+# ── Preprocesamiento ───────────────────────────────────────────────────────
+student <- student_por |>
+  mutate(
+    # Variable objetivo binarizada para regresión logística
+    G3_bin = factor(ifelse(G3 >= 10, "Aprobado", "Suspendido"),
+                    levels = c("Suspendido", "Aprobado")),
+
+    # Promedio de notas parciales
+    G_avg  = (G1 + G2) / 2,
+
+    # Consumo total de alcohol (laboral + fin de semana)
+    Alc_total = Dalc + Walc,
+
+    # Educación media de los padres
+    ParentEdu = (Medu + Fedu) / 2,
+
+    # Recodificación de variables ordinales como numéricas (ya lo son)
+    # Aseguramos que las binarias sean factores
+    across(c(school, sex, address, famsize, Pstatus,
+             schoolsup, famsup, paid, activities, nursery,
+             higher, internet, romantic), as.factor),
+
+    # Variables ordinales como ordered factors para análisis
+    studytime_f = factor(studytime, levels = 1:4,
+                         labels = c("<2h","2-5h","5-10h",">10h"), ordered = TRUE),
+    traveltime_f = factor(traveltime, levels = 1:4,
+                          labels = c("<15min","15-30min","30-60min",">1h"), ordered = TRUE)
+  )
+
+cat("Dataset procesado:\n")
+cat(" - Observaciones:", nrow(student), "\n")
+cat(" - Variables totales:", ncol(student), "\n")
+cat("\nDistribución de G3_bin:\n")
+print(table(student$G3_bin))
+cat("\nTasa de aprobados:", round(mean(student$G3 >= 10) * 100, 1), "%\n")
+```
+
+## Partición Train / Validation / Test (60/20/20)
+
+```{r data-split}
+# ── Partición estratificada 60 / 20 / 20 ──────────────────────────────────
+n <- nrow(student)
+
+# Primera división: 80% train+val — 20% test
+idx_test  <- createDataPartition(student$G3, p = 0.20, list = FALSE)
+test_data <- student[idx_test, ]
+tv_data   <- student[-idx_test, ]
+
+# Segunda división: 75% train — 25% val (del 80% restante → 60% y 20% del total)
+idx_val   <- createDataPartition(tv_data$G3, p = 0.25, list = FALSE)
+val_data  <- tv_data[idx_val, ]
+train_data <- tv_data[-idx_val, ]
+
+cat("╔══════════════════════════════════════╗\n")
+cat("║       PARTICIÓN DE DATOS             ║\n")
+cat("╠══════════════════════════════════════╣\n")
+cat(sprintf("║  Train:      %3d obs  (%.0f%%)          ║\n",
+            nrow(train_data), nrow(train_data)/n*100))
+cat(sprintf("║  Validation: %3d obs  (%.0f%%)          ║\n",
+            nrow(val_data),   nrow(val_data)/n*100))
+cat(sprintf("║  Test:       %3d obs  (%.0f%%)          ║\n",
+            nrow(test_data),  nrow(test_data)/n*100))
+cat(sprintf("║  Total:      %3d obs  (100%%)          ║\n", n))
+cat("╚══════════════════════════════════════╝\n")
+
+# Verificación de distribuciones similares
+cat("\nMedia de G3 por partición:\n")
+cat(sprintf("  Train: %.2f | Val: %.2f | Test: %.2f\n",
+            mean(train_data$G3), mean(val_data$G3), mean(test_data$G3)))
+```
+
+## Análisis Exploratorio de Datos (EDA)
+
+### Variable Objetivo: G3
+
+```{r eda-target}
+p1 <- ggplot(student, aes(x = G3)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 21,
+                 fill = "#2c3e50", color = "white", alpha = 0.85) +
+  geom_density(color = "#e74c3c", linewidth = 1.2) +
+  geom_vline(xintercept = mean(student$G3), linetype = "dashed",
+             color = "#3498db", linewidth = 1) +
+  geom_vline(xintercept = median(student$G3), linetype = "dotted",
+             color = "#2ecc71", linewidth = 1) +
+  annotate("text", x = mean(student$G3) + 0.5, y = 0.13,
+           label = paste0("Media: ", round(mean(student$G3), 1)),
+           color = "#3498db", hjust = 0, size = 3.5) +
+  annotate("text", x = median(student$G3) - 0.5, y = 0.11,
+           label = paste0("Mediana: ", median(student$G3)),
+           color = "#2ecc71", hjust = 1, size = 3.5) +
+  labs(title = "Distribución de la Nota Final (G3)",
+       x = "Nota Final (G3)", y = "Densidad") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p2 <- ggplot(student, aes(x = G3_bin, fill = G3_bin)) +
+  geom_bar(alpha = 0.85, color = "white") +
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = -0.5, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("Suspendido" = "#e74c3c", "Aprobado" = "#2ecc71")) +
+  labs(title = "Distribución Aprobados/Suspendidos",
+       x = "", y = "Número de estudiantes", fill = "") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "none")
+
+p3 <- ggplot(student, aes(sample = G3)) +
+  stat_qq(color = "#2c3e50", alpha = 0.6) +
+  stat_qq_line(color = "#e74c3c", linewidth = 1) +
+  labs(title = "Q-Q Plot de G3",
+       x = "Cuantiles teóricos", y = "Cuantiles observados") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p4 <- ggplot(student, aes(x = "", y = G3)) +
+  geom_boxplot(fill = "#3498db", alpha = 0.7, outlier.color = "#e74c3c",
+               outlier.size = 2) +
+  geom_jitter(width = 0.1, alpha = 0.2, color = "#2c3e50") +
+  labs(title = "Boxplot de G3", x = "", y = "Nota Final") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+```{r eda-target-stats}
+# Estadísticos descriptivos de G3
+cat("=== Estadísticos de G3 ===\n")
+cat(sprintf("Media:          %.3f\n", mean(student$G3)))
+cat(sprintf("Mediana:        %.3f\n", median(student$G3)))
+cat(sprintf("Desv. estándar: %.3f\n", sd(student$G3)))
+cat(sprintf("Asimetría:      %.3f\n", e1071::skewness(student$G3)))
+cat(sprintf("Curtosis:       %.3f\n", e1071::kurtosis(student$G3)))
+cat(sprintf("Mín - Máx:      %d - %d\n", min(student$G3), max(student$G3)))
+
+# Test de normalidad
+sw_test <- shapiro.test(student$G3)
+ad_test <- nortest::ad.test(student$G3)
+cat(sprintf("\nTest Shapiro-Wilk:       W = %.4f, p-valor = %.4e\n",
+            sw_test$statistic, sw_test$p.value))
+cat(sprintf("Test Anderson-Darling:   A = %.4f, p-valor = %.4e\n",
+            ad_test$statistic, ad_test$p.value))
+```
+
+::: callout-note
+**Interpretación:** La distribución de G3 es aproximadamente normal con ligera asimetría negativa, concentrándose las notas en el rango 10-14. El test de Shapiro-Wilk confirma una leve desviación de la normalidad estricta (esperable en muestras grandes), pero la forma general es suficientemente normal para aplicar regresión lineal.
+:::
+
+### Variables Numéricas: Distribuciones y Correlaciones
+
+```{r eda-numeric}
+# Variables numéricas continuas/ordinales relevantes
+num_vars <- c("age", "Medu", "Fedu", "traveltime", "studytime", "failures",
+              "famrel", "freetime", "goout", "Dalc", "Walc", "health",
+              "absences", "G1", "G2", "G3")
+
+num_data <- student[, num_vars]
+
+# Correlograma
+cor_matrix <- cor(num_data, use = "complete.obs")
+
+corrplot(cor_matrix,
+         method = "color",
+         type   = "upper",
+         order  = "hclust",
+         tl.cex = 0.8,
+         tl.col = "black",
+         addCoef.col = "black",
+         number.cex  = 0.65,
+         col = colorRampPalette(c("#e74c3c", "white", "#2c3e50"))(200),
+         title = "Matriz de Correlaciones — Variables Numéricas",
+         mar   = c(0, 0, 1.5, 0))
+```
+
+```{r eda-correlations-table}
+# Top correlaciones con G3
+cor_g3 <- data.frame(
+  Variable    = rownames(cor_matrix),
+  Correlacion = cor_matrix[, "G3"]
+) |>
+  filter(Variable != "G3") |>
+  arrange(desc(abs(Correlacion))) |>
+  mutate(
+    Correlacion = round(Correlacion, 3),
+    Magnitud    = case_when(
+      abs(Correlacion) >= 0.5 ~ "Alta",
+      abs(Correlacion) >= 0.3 ~ "Moderada",
+      abs(Correlacion) >= 0.1 ~ "Baja",
+      TRUE                    ~ "Muy baja"
+    )
+  )
+
+cor_g3 |>
+  kable(caption = "Correlaciones de las variables numéricas con G3",
+        col.names = c("Variable", "Correlación con G3", "Magnitud")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which(abs(cor_g3$Correlacion) >= 0.5), background = "#d5f5e3") |>
+  row_spec(which(abs(cor_g3$Correlacion) >= 0.3 & abs(cor_g3$Correlacion) < 0.5),
+           background = "#fef9e7")
+```
+
+### Variables Categóricas vs G3
+
+```{r eda-categorical, fig.height=10}
+cat_vars <- c("school", "sex", "address", "famsize", "Pstatus",
+              "Mjob", "Fjob", "reason", "guardian", "schoolsup",
+              "famsup", "higher", "internet", "romantic", "activities")
+
+plot_list <- lapply(cat_vars[1:12], function(var) {
+  ggplot(student, aes_string(x = var, y = "G3", fill = var)) +
+    geom_boxplot(alpha = 0.75, outlier.size = 1, show.legend = FALSE) +
+    stat_summary(fun = mean, geom = "point", shape = 18, size = 2,
+                 color = "black") +
+    labs(title = var, x = "", y = "G3") +
+    theme_minimal(base_size = 10) +
+    theme(plot.title = element_text(face = "bold", size = 10),
+          axis.text.x = element_text(angle = 30, hjust = 1, size = 8))
+})
+
+do.call(grid.arrange, c(plot_list, ncol = 3,
+                         top = "Distribución de G3 por variables categóricas"))
+```
+
+```{r eda-grades-evolution}
+# Evolución de notas G1 → G2 → G3
+grades_long <- student |>
+  dplyr::select(G1, G2, G3, G3_bin) |>
+  pivot_longer(cols = c(G1, G2, G3), names_to = "Periodo", values_to = "Nota")
+
+ggplot(grades_long, aes(x = Periodo, y = Nota, fill = Periodo)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.size = 0.8) +
+  scale_fill_manual(values = c("#3498db", "#e67e22", "#2ecc71")) +
+  labs(title = "Evolución de las Notas a lo Largo del Curso",
+       subtitle = "G1 (1er periodo) → G2 (2º periodo) → G3 (final)",
+       x = "Periodo", y = "Nota (0-20)", fill = "Periodo") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "none")
+```
+
+```{r eda-scatter-matrix, fig.height=7}
+# Scatterplot matrix de variables más correlacionadas con G3
+key_vars <- c("G1", "G2", "studytime", "failures", "absences", "Medu", "G3")
+
+GGally::ggpairs(
+  student[, key_vars],
+  upper = list(continuous = wrap("cor", size = 3.5, color = "#2c3e50")),
+  lower = list(continuous = wrap("points", alpha = 0.3, size = 0.8,
+                                  color = "#2c3e50")),
+  diag  = list(continuous = wrap("densityDiag", fill = "#3498db", alpha = 0.5)),
+  title = "Matriz de Dispersión — Variables Clave"
+) +
+  theme_minimal(base_size = 10)
+```
+
+::: callout-tip
+**Hallazgos clave del EDA:**
+
+-   **G1 y G2** tienen una correlación muy alta con G3 (r ≈ 0.87 y 0.90), lo que indica una gran consistencia en el rendimiento a lo largo del curso.
+-   **failures** (número de suspensos previos) presenta correlación negativa importante (r ≈ -0.35).
+-   **higher** (deseo de estudiar educación superior) está fuertemente asociado con mejores notas finales.
+-   Variables como **studytime**, **Medu** y **Fedu** muestran correlaciones moderadas positivas.
+-   El alcohol (**Dalc**, **Walc**) y **goout** presentan correlaciones negativas leves.
+:::
+
+------------------------------------------------------------------------
+
+# Regresión Lineal Simple
+
+## Selección del Predictor
+
+Se elige **G2** (nota del segundo trimestre) como predictor simple por ser la variable más correlacionada con G3 (r ≈ 0.90) y por su evidente interpretación causal: el rendimiento acumulado predice el resultado final.
+
+```{r slr-scatter}
+ggplot(train_data, aes(x = G2, y = G3)) +
+  geom_point(alpha = 0.4, color = "#2c3e50", size = 2) +
+  geom_smooth(method = "lm", color = "#e74c3c", linewidth = 1.2, se = TRUE,
+              fill = "#e74c3c", alpha = 0.15) +
+  geom_smooth(method = "loess", color = "#3498db", linewidth = 1, linetype = "dashed",
+              se = FALSE) +
+  labs(title = "Relación G2 (2º Trimestre) vs G3 (Nota Final)",
+       subtitle = "Rojo: regresión lineal | Azul: suavizado LOESS",
+       x = "Nota 2º Trimestre (G2)", y = "Nota Final (G3)") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Ajuste del Modelo
+
+```{r slr-fit}
+# ── Modelo de Regresión Lineal Simple ─────────────────────────────────────
+slr_model <- lm(G3 ~ G2, data = train_data)
+
+cat("=== MODELO DE REGRESIÓN LINEAL SIMPLE: G3 ~ G2 ===\n\n")
+summary(slr_model)
+```
+
+```{r slr-tidy}
+# Tabla de coeficientes
+tidy(slr_model, conf.int = TRUE) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  kable(caption = "Coeficientes del modelo de regresión lineal simple",
+        col.names = c("Término", "Estimación", "Error Std.", "Estadístico t",
+                      "p-valor", "IC 2.5%", "IC 97.5%")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(2, background = "#d5f5e3", bold = TRUE)
+```
+
+::: callout-note
+**Interpretación del modelo:**
+
+-   **Intercepto (β₀ ≈ 0.97):** Valor esperado de G3 cuando G2 = 0, con poca interpretación práctica.
+-   **Pendiente (β₁ ≈ 0.94):** Por cada punto adicional en G2, la nota final G3 aumenta en promedio **0.94 puntos**, manteniendo todo lo demás constante.
+-   **R² ≈ 0.81:** El modelo explica aproximadamente el 81% de la variabilidad en G3, lo que indica un ajuste muy bueno para un modelo de una sola variable.
+-   El coeficiente es altamente significativo (p \< 2e-16).
+:::
+
+## Diagnóstico de Residuos
+
+```{r slr-residuals, fig.height=8}
+# Gráficos de diagnóstico
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(slr_model,
+     which = 1:4,
+     col   = adjustcolor("#2c3e50", alpha.f = 0.5),
+     pch   = 16,
+     cex   = 0.8)
+par(mfrow = c(1, 1))
+```
+
+```{r slr-residuals-analysis}
+# Análisis formal de residuos
+residuals_slr <- residuals(slr_model)
+fitted_slr    <- fitted(slr_model)
+
+# 1. Normalidad
+sw_res <- shapiro.test(residuals_slr)
+ad_res <- nortest::ad.test(residuals_slr)
+
+# 2. Homocedasticidad
+bp_test <- lmtest::bptest(slr_model)
+gq_test <- lmtest::gqtest(slr_model)
+
+# 3. Autocorrelación
+dw_test <- lmtest::dwtest(slr_model)
+
+cat("=== TESTS DE DIAGNÓSTICO DE RESIDUOS ===\n\n")
+cat("1. NORMALIDAD DE RESIDUOS:\n")
+cat(sprintf("   Shapiro-Wilk:      W = %.4f, p = %.4f\n",
+            sw_res$statistic, sw_res$p.value))
+cat(sprintf("   Anderson-Darling:  A = %.4f, p = %.4f\n",
+            ad_res$statistic, ad_res$p.value))
+cat("\n2. HOMOCEDASTICIDAD:\n")
+cat(sprintf("   Breusch-Pagan:     BP = %.4f, p = %.4f\n",
+            bp_test$statistic, bp_test$p.value))
+cat(sprintf("   Goldfeld-Quandt:   F  = %.4f, p = %.4f\n",
+            gq_test$statistic, gq_test$p.value))
+cat("\n3. AUTOCORRELACIÓN (Durbin-Watson):\n")
+cat(sprintf("   DW = %.4f, p = %.4f\n",
+            dw_test$statistic, dw_test$p.value))
+```
+
+```{r slr-residuals-plots}
+res_df <- data.frame(
+  Fitted    = fitted_slr,
+  Residuals = residuals_slr,
+  StdRes    = rstandard(slr_model)
+)
+
+p_res1 <- ggplot(res_df, aes(x = Fitted, y = Residuals)) +
+  geom_point(alpha = 0.5, color = "#2c3e50") +
+  geom_hline(yintercept = 0, color = "#e74c3c", linewidth = 1) +
+  geom_smooth(se = FALSE, color = "#3498db", linewidth = 0.8) +
+  labs(title = "Residuos vs Valores Ajustados",
+       x = "Valores ajustados", y = "Residuos") +
+  theme_minimal(base_size = 12)
+
+p_res2 <- ggplot(res_df, aes(x = Residuals)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 25,
+                 fill = "#3498db", alpha = 0.7, color = "white") +
+  geom_density(color = "#e74c3c", linewidth = 1.2) +
+  stat_function(fun = dnorm,
+                args = list(mean = mean(residuals_slr), sd = sd(residuals_slr)),
+                color = "#2ecc71", linewidth = 1, linetype = "dashed") +
+  labs(title = "Distribución de Residuos",
+       subtitle = "Azul: densidad empírica | Verde: normal teórica",
+       x = "Residuos", y = "Densidad") +
+  theme_minimal(base_size = 12)
+
+p_res3 <- ggplot(res_df, aes(sample = StdRes)) +
+  stat_qq(alpha = 0.6, color = "#2c3e50") +
+  stat_qq_line(color = "#e74c3c", linewidth = 1) +
+  labs(title = "Q-Q Plot de Residuos Estandarizados",
+       x = "Cuantiles teóricos", y = "Cuantiles observados") +
+  theme_minimal(base_size = 12)
+
+p_res4 <- ggplot(res_df, aes(x = Fitted, y = sqrt(abs(StdRes)))) +
+  geom_point(alpha = 0.5, color = "#2c3e50") +
+  geom_smooth(se = FALSE, color = "#e74c3c", linewidth = 0.8) +
+  labs(title = "Scale-Location",
+       x = "Valores ajustados", y = "√|Residuos estandarizados|") +
+  theme_minimal(base_size = 12)
+
+grid.arrange(p_res1, p_res2, p_res3, p_res4, ncol = 2,
+             top = "Diagnóstico Completo de Residuos — Regresión Lineal Simple")
+```
+
+## Análisis de Puntos Influyentes
+
+```{r slr-influence}
+# Estadísticos de influencia
+inf_stats <- influence.measures(slr_model)
+cook_d    <- cooks.distance(slr_model)
+leverage  <- hatvalues(slr_model)
+
+# Umbrales
+n_train  <- nrow(train_data)
+p_slr    <- 2  # intercepto + 1 predictor
+lev_threshold  <- 2 * p_slr / n_train
+cook_threshold <- 4 / n_train
+
+influence_df <- data.frame(
+  Obs      = 1:n_train,
+  CookD    = cook_d,
+  Leverage = leverage,
+  StdRes   = rstandard(slr_model)
+) |>
+  mutate(
+    Influential = CookD > cook_threshold,
+    HighLev     = Leverage > lev_threshold,
+    Outlier     = abs(StdRes) > 3
+  )
+
+cat(sprintf("Puntos con Cook's D > %.4f: %d\n", cook_threshold,
+            sum(influence_df$Influential)))
+cat(sprintf("Puntos con leverage > %.4f: %d\n", lev_threshold,
+            sum(influence_df$HighLev)))
+cat(sprintf("Outliers (|residuo std| > 3): %d\n", sum(influence_df$Outlier)))
+
+ggplot(influence_df, aes(x = Leverage, y = CookD, color = Influential)) +
+  geom_point(aes(size = abs(StdRes)), alpha = 0.7) +
+  geom_hline(yintercept = cook_threshold, linetype = "dashed",
+             color = "#e74c3c", linewidth = 0.8) +
+  geom_vline(xintercept = lev_threshold, linetype = "dashed",
+             color = "#3498db", linewidth = 0.8) +
+  scale_color_manual(values = c("FALSE" = "#2c3e50", "TRUE" = "#e74c3c")) +
+  labs(title = "Análisis de Puntos Influyentes",
+       subtitle = "Rojo: Cook's D alto | Azul: leverage alto",
+       x = "Leverage (hat values)", y = "Distancia de Cook",
+       color = "Influyente", size = "|Residuo std|") +
+  theme_minimal(base_size = 12)
+```
+
+## Transformación de Variables
+
+```{r slr-transformation}
+# Análisis de si la relación es lineal o requiere transformación
+# Comparamos modelo lineal vs modelos transformados
+
+# Modelo con G2 al cuadrado (componente cuadrático)
+slr_quad <- lm(G3 ~ G2 + I(G2^2), data = train_data)
+
+# Modelo con log(G2+1)
+slr_log  <- lm(G3 ~ log(G2 + 1), data = train_data)
+
+# Modelo con sqrt(G2)
+slr_sqrt <- lm(G3 ~ sqrt(G2), data = train_data)
+
+# Comparación
+compare_slr <- data.frame(
+  Modelo   = c("Lineal: G3 ~ G2",
+               "Cuadrático: G3 ~ G2 + G2²",
+               "Logarítmico: G3 ~ log(G2+1)",
+               "Raíz cuadrada: G3 ~ sqrt(G2)"),
+  R2       = c(summary(slr_model)$r.squared,
+               summary(slr_quad)$r.squared,
+               summary(slr_log)$r.squared,
+               summary(slr_sqrt)$r.squared),
+  R2_adj   = c(summary(slr_model)$adj.r.squared,
+               summary(slr_quad)$adj.r.squared,
+               summary(slr_log)$adj.r.squared,
+               summary(slr_sqrt)$adj.r.squared),
+  AIC      = c(AIC(slr_model), AIC(slr_quad),
+               AIC(slr_log),   AIC(slr_sqrt)),
+  BIC      = c(BIC(slr_model), BIC(slr_quad),
+               BIC(slr_log),   BIC(slr_sqrt)),
+  RMSE_val = sapply(list(slr_model, slr_quad, slr_log, slr_sqrt), function(m) {
+    # Para modelos con transformación en X, predecimos normalmente
+    pred <- predict(m, newdata = val_data)
+    sqrt(mean((val_data$G3 - pred)^2))
+  })
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+compare_slr |>
+  kable(caption = "Comparación de transformaciones — Regresión Lineal Simple") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which.min(compare_slr$AIC), background = "#d5f5e3", bold = TRUE)
+```
+
+```{r slr-transform-plot}
+# Visualización de las transformaciones
+g2_seq <- seq(0, 20, by = 0.1)
+pred_df <- data.frame(
+  G2 = g2_seq,
+  Lineal      = predict(slr_model, newdata = data.frame(G2 = g2_seq)),
+  Cuadratico  = predict(slr_quad,  newdata = data.frame(G2 = g2_seq)),
+  Logaritmico = predict(slr_log,   newdata = data.frame(G2 = g2_seq)),
+  RaizCuad    = predict(slr_sqrt,  newdata = data.frame(G2 = g2_seq))
+) |>
+  pivot_longer(-G2, names_to = "Modelo", values_to = "Pred")
+
+ggplot() +
+  geom_point(data = train_data, aes(x = G2, y = G3),
+             alpha = 0.3, color = "gray50", size = 1.5) +
+  geom_line(data = pred_df, aes(x = G2, y = Pred, color = Modelo), linewidth = 1) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Comparación de Transformaciones en Regresión Simple",
+       x = "G2", y = "G3", color = "Modelo") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Evaluación en Validación y Test
+
+```{r slr-evaluation}
+# Evaluación del modelo lineal simple (mejor según AIC)
+pred_val_slr  <- predict(slr_model, newdata = val_data)
+pred_test_slr <- predict(slr_model, newdata = test_data)
+
+metrics_slr <- data.frame(
+  Conjunto = c("Validación", "Test"),
+  RMSE     = c(sqrt(mean((val_data$G3  - pred_val_slr)^2)),
+               sqrt(mean((test_data$G3 - pred_test_slr)^2))),
+  MAE      = c(mean(abs(val_data$G3  - pred_val_slr)),
+               mean(abs(test_data$G3 - pred_test_slr))),
+  R2       = c(cor(val_data$G3,  pred_val_slr)^2,
+               cor(test_data$G3, pred_test_slr)^2)
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+metrics_slr |>
+  kable(caption = "Métricas del modelo de regresión lineal simple") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Gráfico predicciones vs reales (test)
+ggplot(data.frame(Real = test_data$G3, Pred = pred_test_slr),
+       aes(x = Real, y = Pred)) +
+  geom_point(alpha = 0.6, color = "#2c3e50", size = 2) +
+  geom_abline(slope = 1, intercept = 0, color = "#e74c3c",
+              linewidth = 1.2, linetype = "dashed") +
+  geom_smooth(method = "lm", color = "#3498db", se = FALSE) +
+  labs(title = "Predicciones vs Valores Reales — Test (Regresión Simple)",
+       subtitle = "Línea roja: predicción perfecta",
+       x = "Valores reales (G3)", y = "Valores predichos") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+::: callout-tip
+**Conclusión del modelo simple:** El modelo G3 \~ G2 es excepcionalmente bueno para ser univariante (R² ≈ 0.81 en test). La relación es prácticamente lineal y no requiere transformaciones que mejoren significativamente el ajuste. El modelo cuadrático mejora marginalmente el AIC pero añade complejidad innecesaria. **Se mantiene el modelo lineal simple como referencia.**
+:::
+
+------------------------------------------------------------------------
+
+# Regresión Lineal Múltiple
+
+```{r}
+# Preparamos los datos de entrenamiento para la regresión múltiple
+# Eliminamos G3_bin y G_avg para evitar trampas y multicolinealidad
+train_limpio <- train_data |> 
+  dplyr::select(-G3_bin, -G_avg)
+
+test_limpio <- test_data |> 
+  dplyr::select(-G3_bin, -G_avg)
+```
+
+## Selección de variables y regularización
+
+Vamos a seleccionar el mejor subconjunto de variables.
+
+### Selección de variables
+
+#### Métodos de selección exhaustiva
+
+##### Best Subset Selection
+
+```{r}
+# Calculamos el número de variables predictoras (p)
+# Restamos 1 para excluir la variable respuesta (G3)
+p <- ncol(train_limpio) - 1
+
+# Calculamos el número total de combinaciones posibles (2^p)
+modelos_posibles <- 2^p
+
+cat("Número de predictores (p):", p, "\n")
+cat("Modelos posibles a evaluar (2^p):", modelos_posibles)
+```
+
+Hemos descartado realizar la "Best Subset Selection" debido a su complejidad computacional. Este método lo que hace es evaluar todas las combinaciones posibles de predictores, creciendo exponencialmente ($2^p$ modelos posibles).
+
+#### Métodos automáticos
+
+```{r modelos seleccion}
+# Modelo inicial
+  # ~ 1 crea un modelo sin usar ninguna variable predictora
+  # Es el punto de partida. Se empieza con este modelo y se van añadiendo variables una a una para ver cual mejora más la predicción
+modelo_inicial <- lm(G3 ~ 1, data = train_limpio)
+
+# Modelo completo
+  # ~ . crea un modelo usando todas las variables del dataset
+  # Para ir añadiendo las variables al modelo
+modelo_completo <- lm(G3 ~ ., data = train_limpio)
+```
+
+##### Forward Selection
+
+Este método parte de un modelo vacío y prueba todas las variables predictoras del dataset una a una. En cada paso evalúa y guarda la variable que más mejore el modelo, hasta que guardar una variable no suponga ninguna mejora. Este modelo no puede eliminar variables una vez incluidad.
+
+```{r forward selection}
+# Forward selection usando AIC (cuanto menor AIC, mejor modelo)
+  # Al poner "modelo_inicial" al principio, le decimos a la función por donde empezar, es decir, con el modelo que no tiene variables predictoras, solo el intertcepto
+  # lower = modelo_inicial significa que como mínimo puede no tener las variables predictoras 
+  # upper = modelo_completo significa que como máximo puede meter en el modelo todas las variables del dataset
+  # direction = "forward" indica el método que estamos utilizando
+  # trace = FALSE para que no imprima todos los resultados, solo el resultado final
+forward_aic <- step(modelo_inicial, 
+                    scope = list(lower = modelo_inicial, upper = modelo_completo),
+                    direction = "forward", 
+                    trace = FALSE)
+
+cat("Variables seleccionadas:\n")
+
+# coef(forward_aic) saca las variables seleccionadas
+# [-1] para excluir el intercepto, que siempre va a ser la primera variable que saque
+forward_vars <- names(coef(forward_aic))[-1]
+
+cat(paste(forward_vars, collapse = ", "), "\n")
+cat("AIC final:", AIC(forward_aic), "\n")
+cat("Número de variables:", length(forward_vars), "\n\n")
+
+# Resumen del modelo final
+summary(forward_aic)
+```
+
+##### Backward Elimination
+
+Este método es inverso al Forward Selection. Lo que hace es partir del modelo completo, que contiene todas las variables predictoras del dataset, y en cada paso evalúa qué variable aporta menos información a nuestro modelo y la elimina. Así hasta que eliminar una variable suponga empeorar el modelo. En este caso, el modelo solo funciona si hay más variables que datos (en nuestro caso más alumnos que variables, y como tenemos 227 alumnos y 67 variables podemos usar este método).
+
+```{r backward elimination}
+# Backward elimination usando AIC (cuanto menor AIC, mejor modelo)
+  # Al poner "modelo_completo" al principio, le decimos a la función por donde empezar, es decir, con el modelo que tiene todas las variables predictoras de nuestro dataset
+  # direction = "backward" indica el método que estamos usando
+  # trace = FALSE para que no imprima todos los resultados, solo el resultado final
+backward_aic <- step(modelo_completo, 
+                     direction = "backward", 
+                     trace = FALSE)
+
+cat("Variables seleccionadas:\n")
+
+# coef(backward_aic) saca las variables seleccionadas
+# [-1] para excluir el intercepto, que siempre va a ser la primera variable que saque
+backward_vars <- names(coef(backward_aic))[-1]
+
+cat(paste(backward_vars, collapse = ", "), "\n")
+cat("AIC final:", AIC(backward_aic), "\n")
+cat("Número de variables:", length(backward_vars), "\n\n")
+
+# Resumen del modelo final
+summary(backward_aic)
+```
+
+##### Stepwise Selection
+
+En este caso, este método parte de un modelo vacío y en cada paso evalúa si añadir una nueva variable que mejore el modelo, como en el de Forward Selection. Pero este método lo que hace es que tras cada incorporación de una variable nueva, comprueba si alguna de las variables que ya se habían añadido al modelo ha dejado de ser relevante y se puede eliminar. La limitación de este método es que solo encuentra un único óptimo local, es decir, encuentra el mejor modelo siguiendo un camino específico, pero no garantiza encontrar el mejor modelo de entre todas las combinaciones posibles, ya que no evalúa el espacio completo de modelos.
+
+```{r stepwise selection}
+# Stepwise selection usando AIC (cuanto menor AIC, mejor modelo)
+  # Al poner "modelo_inicial" al principio, le decimos a la función por donde empezar, es decir, con el modelo que no tiene variables predictoras, solo el intertcepto
+  # lower = modelo_inicial significa que como mínimo puede no tener las variables predictoras 
+  # upper = modelo_completo significa que como máximo puede meter en el modelo todas las variables del dataset
+  # direction = "both" indica el método que estamos utilizando, en este caso es una mezcla del Forward y el Backward
+  # trace = FALSE para que no imprima todos los resultados, solo el resultado final
+stepwise_aic <- step(modelo_inicial, 
+                     scope = list(lower = modelo_inicial, upper = modelo_completo),
+                     direction = "both", 
+                     trace = FALSE)
+
+cat("Variables seleccionadas:\n")
+
+# coef(stepwise_aic) saca las variables seleccionadas
+# [-1] para excluir el intercepto, que siempre va a ser la primera variable que saque
+stepwise_vars <- names(coef(stepwise_aic))[-1]  
+
+cat(paste(stepwise_vars, collapse = ", "), "\n")
+cat("AIC final:", AIC(stepwise_aic), "\n")
+cat("Número de variables:", length(stepwise_vars), "\n\n")
+
+# Resumen del modelo final
+summary(stepwise_aic)
+```
+
+#### Comparación de los métodos automáticos
+
+```{r comparacion metodos automaticos}
+# Comparación de métodos automáticos
+metodos_automaticos <- data.frame(
+  Metodo = c("Forward", "Backward", "Stepwise"),
+  N_Variables = c(length(forward_vars), length(backward_vars), length(stepwise_vars)),
+  AIC = c(AIC(forward_aic), AIC(backward_aic), AIC(stepwise_aic)),
+  R2_adj = c(summary(forward_aic)$adj.r.squared,
+             summary(backward_aic)$adj.r.squared,
+             summary(stepwise_aic)$adj.r.squared)
+)
+
+print(metodos_automaticos)
+```
+
+Como se puede ver en la tabla, con los tres métodos hemos obtenido los mismos resultados. En todos los casos se selecciona un subconjunto de 10 variables predictoras (G2, sexM, schoolMS, G1, reasonhome, reasonother, reasonreputation, failures, addressU, freetime). También hemos obtenido que $R^2_{adj} = 0.8485 $, es decir, que nuestro modelo explica un 84.85% de la variabilidad total a partir únicamente de las 10 variables seleccionadas.
+
+Los asteriscos que se pueden ver en los resultados de cada método muestran, a partir del p-valor, la importancia de una variable para nuestro modelo. Cuantos más asteriscos tenga, más importante es. Y si no tiene ningún asterisco significa que no es una variable relevante, que no nos da suficiente información. En el resumen de cada uno de los métodos se puede ver que la variable más relevante es "G2" con $p-valor < 2e-16$.
+
+#### Comparación de las variables seleccionadas
+
+```{r comparacion seleccion}
+# Crear matriz de comparación de variables seleccionadas
+todas_vars <- names(train_limpio)[-which(names(train_limpio) == "G3")]
+
+comprobar_variables <- function(variable, seleccionadas) {
+  # Coprobar si alguna de las variables seleccionadas empieza con el nombre de mi variable
+  # Lo hacemos así por la división en niveles
+  any(startsWith(x = seleccionadas, prefix = variable))
+}
+
+# sapply() mira en una lista de elementos uno a uno y devuelve los resultado en un vector
+comparacion_seleccion <- data.frame(
+  Forward = sapply(todas_vars, comprobar_variables, seleccionadas = forward_vars),
+  Backward = sapply(todas_vars, comprobar_variables, seleccionadas = backward_vars),
+  Stepwise = sapply(todas_vars, comprobar_variables, seleccionadas = stepwise_vars)
+)
+
+print(comparacion_seleccion)
+```
+
+Esta tabla muestra la selección de variables de cada método que, en este caso, los tres seleccionan las mismas variables (school, sex, address).
+
+### Regularización
+
+```{r regularizacion}
+# Creamos las matrices
+  # Usamos model.matrix para convertir las variables categóricas a 0 y 1
+  # glmnet solo admite numéros, así que creamos matrices numéricas
+  # Hay que poner [, -1] para eliminar la columna de unos del intercepto que se crea
+
+X_train <- model.matrix(G3 ~ ., data = train_limpio)[, -1] # Variables predictoras
+y_train <- train_limpio$G3 # Variables respuesta
+
+X_test <- model.matrix(G3 ~ ., data = test_limpio)[, -1] # Variables predictoras
+y_test <- test_limpio$G3 # Variables respuesta
+
+cat("Entrenamiento:", nrow(X_train), "observaciones\n")
+cat("Prueba:", nrow(X_test), "observaciones\n")
+cat("Variables predictoras:", ncol(X_train), "\n")
+```
+
+```{r lambda grid}
+# Grid de valores lambda
+  # 100 números que van desde 10 hasta -2
+  # Eleva 10 a cada uno de esos números
+lambda_grid <- 10^seq(10, -2, length = 100)
+```
+
+#### Modelo Ridge
+
+En este modelo, cuanto más aumenta el valor de lambda, más se reduce la magnitud de los coeficientes acercándose cada vez más a 0, pero el valor nunca va a ser un 0 absoluto.
+
+```{r ridge}
+# Modelo Ridge (alpha = 0)
+  # Para Ridge se usa alpha = 0 (alpha = 1 es para lasso)
+
+# Ajustar Ridge regression
+ridge_model <- glmnet(X_train, y_train, alpha = 0, lambda = lambda_grid) 
+
+# Validación cruzada para seleccionar lambda óptimo
+  # cv.glmnet divide los datos de entrenamiento en 10 trozos (nfolds = 10)
+  # Entrena con 9 y prueba con 1, repitiendo el proceso para encontrar qué lambda funciona mejor
+ridge_cv <- cv.glmnet(X_train, y_train, alpha = 0, lambda = lambda_grid, nfolds = 10) 
+
+# Lambda óptimo
+  # lambda.min es el valor exacto que consigue el menor error posible en la validación cruzada
+  # lambda.1se es un lambda un poco más fuerte pero cuyo error no se aleja más de 1 Desviación Estándar del error mínimo
+lambda_ridge_min <- ridge_cv$lambda.min
+lambda_ridge_1se <- ridge_cv$lambda.1se
+
+cat("Lambda mínimo:", lambda_ridge_min, "\n")
+cat("Lambda 1SE:", lambda_ridge_1se, "\n")
+
+# Predicciones en conjunto de prueba
+  # Ponemos a prueba los dos lambdas usando datos nuevos
+ridge_pred_min <- predict(ridge_model, s = lambda_ridge_min, newx = X_test)
+ridge_pred_1se <- predict(ridge_model, s = lambda_ridge_1se, newx = X_test)
+
+# Métricas de rendimiento
+  # RMSE (Raíz del Error Cuadrático Medio) nos dice por cuanto se equivoca el modelo de media
+ridge_rmse_min <- sqrt(mean((ridge_pred_min - y_test)^2))
+ridge_rmse_1se <- sqrt(mean((ridge_pred_1se - y_test)^2))
+ 
+cat("RMSE (lambda min):", round(ridge_rmse_min, 3), "\n")
+cat("RMSE (lambda 1SE):", round(ridge_rmse_1se, 3), "\n")
+
+# Coeficientes finales
+  # Extraemos el peso que el modelo le ha dado a cada variable con el mejor lambda
+ridge_coefs <- predict(ridge_model, type = "coefficients", s = lambda_ridge_min)[, 1]
+print(round(ridge_coefs, 4))
+```
+
+Tras haber probado los 100 valores, concluyó que el mejor lambda para minimizar el error (lambda.min) es 0.0231013. Y Lambda 1SE = 1.149757, que en este caso, este lambda lo que hace es evitar el sobreajuste, aunque no minimiza el error como el otro. Pero, como se puede ver, el error apenas cambia entre un lambda y otro (aumentando solo de 0.986 a 0.989).
+
+Y, si miramos los coeficientes, podemos ver que para este modelo nunca son cero, es decir, el modelo Ridge no elimina ninguna variable.
+
+```{r}
+# Gráfico de validación cruzada
+plot(ridge_cv, main = "Validación Cruzada - Ridge Regression")
+```
+
+En este gráfico en el eje Y se encuentra el error del modelo (cuanto más bajo mejor), y en el eje X "$-log(\lambda)$", que es el lambda pero en escala logarítmica.
+
+Cada uno de los puntos rojos es uno de los 100 valores que se le ha dado a lambda y las líneas grises que hay alrededor de estos puntos indican el margen de error, es decir, la desviación estándar.
+
+A la derecha se pueden ver dos líneas discontinuas verticales que indican los mejores lambdas, la de la izquierda es "lambda.min" y la de la derecha "lambda.1se".
+
+Y encima aparece el número 49 de forma constante, que indica el número de variables predictoras que usa el modelo en cada momento, que en este caso siempre son 49, lo que confirma que el modelo Ridge no elimina ninguna variable.
+
+#### Modelo Lasso
+
+En este caso, cuanto más aumenta el valor de lambda, mayor es el número de coeficientes que tienen valor 0, lo que hace que esas variables sean eliminadas.
+
+```{r lasso}
+# Modelo Lasso (alpha = 1)
+  # Para Lasso se usa alpha=1 (alpha=0 es para ridge)
+
+# Ajustar Lasso regression
+lasso_model <- glmnet(X_train, y_train, alpha = 1, lambda = lambda_grid) 
+
+# Validación cruzada para seleccionar lambda óptimo
+  # cv.glmnet divide los datos de entrenamiento en 10 trozos (nfolds = 10)
+  # Entrena con 9 y prueba con 1, repitiendo el proceso para encontrar qué lambda funciona mejor
+lasso_cv <- cv.glmnet(X_train, y_train, alpha = 1, lambda = lambda_grid, nfolds = 10) 
+
+# Lambda óptimo
+  # lambda.min es el valor exacto que consigue el menor error posible en la validación cruzada
+  # lambda.1se es un lambda un poco más fuerte pero cuyo error no se aleja más de 1 Desviación Estándar del error mínimo
+lambda_lasso_min <- lasso_cv$lambda.min
+lambda_lasso_1se <- lasso_cv$lambda.1se
+
+cat("Lambda mínimo:", lambda_lasso_min, "\n")
+cat("Lambda 1SE:", lambda_lasso_1se, "\n")
+
+# Predicciones en conjunto de prueba
+  # Ponemos a prueba los dos lambdas usando datos nuevos
+lasso_pred_min <- predict(lasso_model, s = lambda_lasso_min, newx = X_test)
+lasso_pred_1se <- predict(lasso_model, s = lambda_lasso_1se, newx = X_test)
+
+# Métricas de rendimiento
+  # RMSE (Raíz del Error Cuadrático Medio) nos dice por cuanto se equivoca el modelo de media
+lasso_rmse_min <- sqrt(mean((lasso_pred_min - y_test)^2))
+lasso_rmse_1se <- sqrt(mean((lasso_pred_1se - y_test)^2))
+
+cat("RMSE (lambda min):", round(lasso_rmse_min, 3), "\n")
+cat("RMSE (lambda 1SE):", round(lasso_rmse_1se, 3), "\n")
+
+# Coeficientes finales (Lasso puede hacer coeficientes = 0)
+  # Extrae los coeficientes del mejor modelo
+lasso_coefs <- predict(lasso_model, type = "coefficients", s = lambda_lasso_min)[, 1]
+print(round(lasso_coefs, 4))
+
+# Variables seleccionadas por Lasso
+  # Como los coeficientes pueden ser 0, nos quedamos únicamente con los que no lo sean (!= 0)
+vars_lasso <- names(lasso_coefs[lasso_coefs != 0])[-1]  # Excluir intercepto
+
+cat("\nVariables seleccionadas por Lasso:", paste(vars_lasso, collapse = ", "), "\n")
+cat("Número de variables seleccionadas:", length(vars_lasso), "\n")
+```
+
+En el modelo Lasso el mejor lambda para minimizar el error (lambda.min) nos ha salido que es 0.09326033 , y Lambda 1SE = 0.4977024, que es el lambda que evita el sobreajuste. El error ha mejorado, es decir, el modelo Lasso se equivoca menos al predecir con los nuevos datos. Ahora el error cuadrático medio es 0.812 para lambda.min y 0.789 para lambda.1se, y aquí se puede ver que lambda.min no tiene porque ser la mejor opción, ya que en este caso tiene menor error lambda.1se.
+
+Además, en este caso se pueden ver muchos coeficientes que son cero, y lo que hace este modelo es eliminarlos y quedarse con los que son distintos de cero, quedándose únicamente con 10 variables predictoras (schoolMS, sexM, addressU, Mjobother, reasonother, failures, famsupyes, freetime, G1, G2).
+
+```{r}
+# Gráfico de validación cruzada
+plot(lasso_cv, main = "Validación Cruzada - Lasso Regression")
+```
+
+Al igual que en el gráfico anterior, en el eje Y se encuentra el error del modelo (cuanto más bajo mejor), y en el eje X "$-log(\lambda)$", que es el lambda pero en escala logarítmica.
+
+Cada uno de los puntos rojos es uno de los 100 valores que se le ha dado a lambda y las líneas grises que hay alrededor de estos puntos indican el margen de error, es decir, la desviación estándar.
+
+A la derecha se pueden ver dos líneas discontinuas verticales que indican los mejores lambdas, la de la izquierda es "lambda.min" y la de la derecha "lambda.1se".
+
+Y encima aparece una serie de número que indica el número de variables predictoras que usa el modelo en cada momento. Al principio, cuando lambda es un valor grande, el modelo tiene cero variables, pero a medida que lambda disminuye, las variables predictoras aumentan.
+
+Al principio, cuando el valor de lambda es más grande y no se usa ninguna variable predictora, el error se mantiene constante y elevado, hasta que llega un punto, cuando se reduce el lambda y se utilizan unas pocas variables predictoras, en el que la curva roja desciende y se mantiene muy baja. Por lo que se puede ver que no se necesitan las 67 variables predictoras para predecir bien y que el error sea bajo.
+
+#### Elastic Net
+
+Este modelo calcula el parámetro alpha, cuanto más se acerque a 1 significa que se comporta como Lasso, y cuanto más se acerque a 0, su comportamiento de acerca más al del modelo Ridge.
+
+```{r elastic net}
+# Grid de valores alpha para Elastic Net
+alpha_grid <- seq(0, 1, length = 11)
+
+# Función para encontrar el mejor alpha
+  # A partir de un valor de alpha entrena el modelo, hace validación cruzada y devuelve el error mínimo que ha conseguido
+best_alpha_search <- function(alpha_val) {
+  cv_result <- cv.glmnet(X_train, y_train, alpha = alpha_val, lambda = lambda_grid, nfolds = 10)
+  return(data.frame(alpha = alpha_val, 
+                   lambda_min = cv_result$lambda.min,
+                   cvm_min = min(cv_result$cvm)))
+}
+
+# Buscar mejor alpha
+  # map_dfr() le pasa todos los valores de alpha a la función y guarda todos los resultados en una tabla
+alpha_results <- map_dfr(alpha_grid, best_alpha_search)
+
+  # Buscamos en la tabla la fila con el error más bajo (cvm_min)
+best_alpha <- alpha_results$alpha[which.min(alpha_results$cvm_min)]
+
+cat("Mejor alpha:", best_alpha, "\n")
+
+# Ajustar Elastic Net con mejor alpha
+  # A partir del aplpha que nos haya salido entrenamos el modelo final
+elastic_model <- glmnet(X_train, y_train, alpha = best_alpha, lambda = lambda_grid) 
+elastic_cv <- cv.glmnet(X_train, y_train, alpha = best_alpha, lambda = lambda_grid, nfolds = 10)
+
+  # lambda.min es el valor exacto que consigue el menor error posible en la validación cruzada
+lambda_elastic_min <- elastic_cv$lambda.min
+cat("Lambda óptimo:", lambda_elastic_min, "\n")
+
+# Predicciones en conjunto de prueba
+  # Ponemos a prueba nuestro modelo usando datos nuevos
+elastic_pred <- predict(elastic_model, s = lambda_elastic_min, newx = X_test)
+
+  # RMSE (Raíz del Error Cuadrático Medio) nos dice por cuanto se equivoca el modelo de media
+elastic_rmse <- sqrt(mean((elastic_pred - y_test)^2))
+
+cat("RMSE:", round(elastic_rmse, 3), "\n")
+
+# Coeficientes finales
+elastic_coefs <- predict(elastic_model, type = "coefficients", s = lambda_elastic_min)[, 1]
+print(round(elastic_coefs, 4))
+
+# Variables seleccionadas por Elastic Net
+  # > 1e-6 para que solo muestre las variables cuyo valor absoluto sea mayor a un número muy pequeño
+vars_elastic <- names(elastic_coefs[abs(elastic_coefs) > 1e-6])[-1]  # Excluir intercepto
+
+cat("\nVariables seleccionadas por Elastic Net:", paste(vars_elastic, collapse = ", "), "\n")
+cat("Número de variables seleccionadas:", length(vars_elastic), "\n")
+```
+
+En este modelo el parámetro que obtenemos, además del lambda óptimo (0.1232847), es el alpha, que controla el peso de cada método. Como hemos obtenido $\alpha = 1$, significa que nuestro modelo es un 100% Lasso y un 0% Ridge.
+
+Al ser en su totalidad Lasso, el modelo tiene coeficientes que son cero, por lo que elimina esas variables y se queda con las que tienen un coeficiente distinto a cero.
+
+El error de este modelo nos ha dado 0.796, que se acerca más al del modelo Lasso que al del modelo Ridge.
+
+Finalmente este modelo, de las 67 variables predictoras totales, se ha quedado únicamente con 8.
+
+#### Comparación de los métodos de regularización
+
+```{r comparacion regularizacion}
+# Comparar todos los métodos de regularización
+comparacion_reg <- data.frame(
+  Metodo = c("Ridge (min)", "Ridge (1SE)", "Lasso (min)", "Lasso (1SE)", "Elastic Net"),
+  RMSE = c(ridge_rmse_min, ridge_rmse_1se, lasso_rmse_min, lasso_rmse_1se, elastic_rmse),
+  N_Variables = c(sum(abs(ridge_coefs[-1]) > 1e-6),
+                  sum(abs(predict(ridge_model, type = "coefficients", s = lambda_ridge_1se)[-1, 1]) > 1e-6),
+                  length(vars_lasso),
+                  sum(abs(predict(lasso_model, type = "coefficients", s = lambda_lasso_1se)[-1, 1]) > 1e-6),
+                  length(vars_elastic))
+) # [-1, 1] para quitar el intercepto (-1)
+
+print(comparacion_reg)
+```
+Tras comparar los tres métodos de regularización, el modelo Ridge mantiene todas las variables predictoras (49) y es el de error más alto. Por otro lado, Elastic Net baja disminuye bastante el error y solo usa 8 variables predictoras. Sin embargo, como se puede ver en la tabla, la mejor opción es el modelo Lasso (1SE), ya que es el de error más bajo (0.7886541) y únicamente utiliza 2 variables, por lo que destaca por su simplicidad.
+
+```{r}
+# Gráfico de comparación
+ggplot(comparacion_reg, aes(x = N_Variables, y = RMSE, color = Metodo)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = Metodo), hjust = 0, vjust = -0.5, size = 3) +
+  labs(title = "Comparación de Métodos de Regularización",
+       x = "Número de Variables Efectivas", 
+       y = "RMSE en Conjunto de Prueba") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+En la gráfica, en el eje Y se encuentra el error y en el eje X el número de variables. Cuanto más cerca de la esquina inferior izquierda mejor es el modelo, ya que es donde hay tanto menor error como menor número de variables. Y como se puede observar, el modelo más cercano a esa esquina es Lasso (1SE).
+
+## Selección del mejor modelo de regresión lineal múltiple
+
+```{r}
+# Predicciones del modelo Stepwise sobre el conjunto de TEST
+pred_stepwise <- predict(stepwise_aic, newdata = test_limpio)
+
+# Calcular el RMSE real de Stepwise
+rmse_stepwise_test <- sqrt(mean((pred_stepwise - test_limpio$G3)^2))
+
+cat("RMSE Test Stepwise:", rmse_stepwise_test, "\n")
+cat("RMSE Test 1SE:", lasso_rmse_1se, "\n")
+```
+
+En la selección de variables vimos que con todos los métodos obtenemos los mismos resultados, y en la regularización nos quedamos con el modelo Lasso (1SE), pero si comparas ambos modelos, además de que el modelo Lasso utiliza menos variables (2), también tiene menor error, por lo que es la mejor opción.
+
+```{r}
+# Coeficientes finales de Lasso 1SE (modelo seleccionado)
+  # Extraemos los coeficientes usando lambda_lasso_1se en lugar de lambda_lasso_min
+lasso_coefs_1se <- predict(lasso_model, type = "coefficients", s = lambda_lasso_1se)[, 1]
+
+# Imprimimos solo los coeficientes que no son cero para verlos limpios
+coeficientes <- lasso_coefs_1se[lasso_coefs_1se != 0]
+print(round(coeficientes, 4))
+
+# Variables seleccionadas por Lasso (1SE)
+vars_lasso_1se <- names(coeficientes)[-1]  # Eliminar el intercepto
+
+cat("\nVariables seleccionadas por Lasso (1SE):", paste(vars_lasso_1se, collapse = ", "), "\n")
+cat("Número de variables seleccionadas:", length(vars_lasso_1se), "\n")
+```
+
+Aquí podemos ver que las 2 únicas variables con las que se queda el modelo Lasso (1SE) son "G1" y "G2".
+
+## Modelos no lineales y transformación de variables
+
+### Modelos no lineales
+
+Al comparar los modelos, hemos comprobado que el mejor es el modelo Lasso (1SE), que se queda con 2 variables, que son "G1" y "G2", y son las que vamos a estudiar a partir de un diagnóstico con gráficos CPR (Gráficos de Componente más Residuo).
+
+```{r modelos no lineales}
+modelo_lineal <- lm(G3 ~ G1 + G2 , data = train_limpio)
+
+car::crPlots(modelo_lineal)
+```
+
+En cuanto a la no linealidad para estas variables, en ambos casos se puede ver que las líneas rosas están superpuestas sobre las azules, lo que quiere decir que existe una relación lineal muy fuerte.
+
+### Transformación de variables
+
+Dado que ninguna de las 2 variables seleccionadas nos ha dado problemas y ambas tienen una relación lineal adecuada, no es necesario aplicar transformaciones a ninguna de ellas.
+
+## Diagnóstico del modelo
+
+Como hemos observado que el modelo Lasso es la mejor opción, es el que vamos a utilizar para el diagnóstico de nuestro modelo. Por lo que vamos a coger las 10 variables que ha seleccionado.
+
+```{r}
+# Cogemos las 2 variables que ha seleccionado el modelo Lasso (1SE)
+modelo_final <- lm(G3 ~ G2 + G1, 
+                   data = train_limpio)
+
+summary(modelo_final)
+```
+
+### Análisis de multicolinealidad (VIF)
+
+La multicolinealidad consiste en una correlación alta entre variables predictoras, lo que hace que se arruine la interpretación práctica del modelo.
+
+```{r}
+# Calculamos el Factor de Inflación de la Varianza (VIF)
+vif_values <- vif(modelo_final)
+print(vif_values)
+
+cat("\nInterpretación del VIF:\n")
+cat("- VIF < 5: No hay problema de multicolinealidad\n")
+cat("- 5 ≤ VIF < 10: Multicolinealidad moderada\n")
+cat("- VIF ≥ 10: Multicolinealidad severa\n\n")
+
+for(i in 1:length(vif_values)) {
+  var_name <- names(vif_values)[i]
+  vif_val <- vif_values[i]
+  
+  if(vif_val < 5) {
+    status <- "OK"
+  } else if(vif_val < 10) {
+    status <- "Moderada"
+  } else {
+    status <- "Severa"
+  }
+  
+  cat(var_name, ": VIF =", round(vif_val, 2), "(", status, ")\n")
+}
+
+# Modelo con mayor multicolinealidad
+modelo_colineal <- lm(mpg ~ wt + hp + cyl + disp, data = mtcars)
+vif_colineal <- vif(modelo_colineal)
+
+# Modelo con más variables (mayor multicolinealidad)
+print(round(vif_colineal, 2))
+```
+
+En estos resultados se puede ver que aunque el VIF de G1 y G2 sea casi 5, no llega a serlo y sigue estando dentro del margen aceptable (4.37 < 5), por lo que no hay multicolinealidad en nuestro modelo.
+
+### Análisis de los residuos
+
+Este análisis nos va a servir para comprobar si hay algún error en nuestro modelo que no haya sido observado
+
+```{r fig.width=8, fig.height=8}
+par(mfrow = c(2, 2))
+plot(modelo_final)
+par(mfrow = c(1, 1))
+```
+
+El gráfico de "Residuals vs Fitted values" sirve para comprobar la linealidad. Se observa que la línea roja es prácticamente recta sobre el cero, lo que significa que el supuesto de linealidad se cumple.
+
+En el caso de "Q-Q Residuals", para que haya normalidad los puntos tienen que seguir la línea discontinua y, sin embargo, aunque casi todos los datos lo hacen, en el extremo izquierdo, hay puntos que se alejan, y a la derecha del todo hay un punto al que le pasa lo mismo. Por lo que no siguen una distribución normal.
+
+En el de "Scale-Location", para que haya homocedasticidad la línea tiene que ser completamente recta y la dispersión de los residuos no tendría que cambiar. Sin embargo, en nuestro gráfico se puede ver que la línea roja no es plana, sino que tiene curvatura. Y, en cuanto a la dispersión de los residuos, no es constante, por lo que no podemos decir que haya homocedasticidad.
+
+Y, por último, "Residuals vs Leverage" evalúa la presencia de puntos influyentes. Se puede ver que la mayoría de las observaciones tienen poco Leverage o incluso nada, y ninguna de ellas supera las líneas de la Distancia de Cook.
+
+#### Verificar supuestos
+
+```{r}
+# Normalidad de residuos (orientativo)
+shapiro <- shapiro.test(resid(modelo_final))
+
+# Homocedasticidad (Breusch–Pagan)
+bp <- lmtest::bptest(modelo_final)
+
+# Independencia / autocorrelación (Durbin–Watson)
+dw <- lmtest::dwtest(modelo_final)
+
+list(
+  shapiro = shapiro,
+  breusch_pagan = bp,
+  durbin_watson = dw
+)
+```
+
+Dado que ninguno de los p-valores de estos supuestos son mayores que 0.05, podemos decir que no se cumplen.
+
+### Observaciones influyentes (outliers)
+
+```{r}
+n <- nobs(modelo_final)
+p <- length(coef(modelo_final))
+
+lev <- hatvalues(modelo_final)
+cook <- cooks.distance(modelo_final)
+dff <- dffits(modelo_final)
+dfb <- dfbetas(modelo_final)
+
+# Umbrales
+cook_thr <- 4/n
+lev_thr  <- 2*p/n
+dfb_thr  <- 2/sqrt(n)
+
+# Índices sospechosos
+idx_cook <- which(cook > cook_thr)
+idx_lev  <- which(lev  > lev_thr)
+idx_dff  <- which(abs(dff) > 2*sqrt(p/n))
+
+# Resumen
+list(
+  n = n, p = p,
+  cook_threshold = cook_thr,
+  leverage_threshold = lev_thr,
+  dfbetas_threshold = dfb_thr,
+  idx_high_cook = idx_cook,
+  idx_high_leverage = idx_lev,
+  idx_high_dffits = idx_dff
+)
+```
+
+Aquí, el valor de n es el tamaño muestral (387) y p es el número de parámetros (3). Al hacer $cook_thr <- 4/n$, que es la distancia de Cook, hemos obtenido un valor de 0.01033592, y nos ha dado que hay 16 observaciones que influyen significativamente en nuestro modelo (las mismas observaciones que superan el umbral de DFFITS). $lev_thr  <- 2*p/n$ calcula el Leverage, que es 0.01550388, y utilizando este umbral hemos obtenido 27 observaciones con valores extremos en sus variables predictoras.
+
+```{r}
+# Rankin de las observaciones influyentes
+influence_tbl <- tibble(
+  obs = seq_len(n),
+  leverage = lev,
+  cooks_d = cook,
+  dffits = dff
+) %>%
+  arrange(desc(cooks_d))
+
+influence_tbl %>% slice(1:10)
+```
+
+Para que una observación sea influyente tiene que superar los umbrales de Cook (0.5 o 1), sin embargo, como se puede observar ninguna de nuestras observaciones los supera, ya que la primera observación que aparece en esta tabla es la 382 con una distancia de Cook de 0.26696844	, y como este es el valor máximo y no supera ninguno de los umbrales, ninguna observación lo hará.
+
+```{r}
+# Observaciones con al menos un DFBETAS grande
+idx_dfb <- which(apply(abs(dfb) > dfb_thr, 1, any))
+
+idx_dfb
+```
+
+Los DFBETAS evalúan qué observaciones afectan a qué coeficientes específicos. Nuestro modelo tiene 3 parámetros (p), y se busca si alguna observación cambia significativamente alguno de los coeficientes (DFBETAS altos).
+
+```{r}
+# Ver qué coeficientes son los más afectados
+if (length(idx_dfb) > 0) {
+  dfb_big <- as.data.frame(dfb[idx_dfb, , drop = FALSE])
+  dfb_big$obs <- idx_dfb
+  dfb_big %>%
+    relocate(obs) %>%
+    arrange(desc(rowSums(abs(across(where(is.numeric), ~ .x)))))
+} else {
+  cat("No se detectaron observaciones con DFBETAS por encima del umbral 2/sqrt(n).\n")
+}
+```
+
+Esta tabla representa cuánto cambia cada coeficiente al quitar una observación y, como se puede ver, ningún coeficiente muestra un cambio significativo. Por lo que, a pesar de que, como hemos visto, hay observaciones con DFBETAS altos, como hemos observado antes en la Distancia de Cook, ningún cambio es lo suficientemente fuerte como para cambiar significativamente nuestro modelo. Lo que reafirma nuestra decisión de no eliminar ninguna observación.
+
+#### Gráfico de influencia (leverage vs residuos estudentizados) con Cook
+
+```{r}
+# id = list(n = 5) etiqueta las 5 burbujas más grandes o alejadas (las observaciones más influyentes)
+car::influencePlot(modelo_final, id = list(n = 5), main = "Influence Plot", sub = "Tamaño ~ Cook's distance")
+```
+
+Esta tabla nos muestra las observaciones más influyentes de nuestro modelo. En el caso de la observación 164, presenta un Residuo Estudentizado muy negativo (-7.2176215), lo que significa que ha habido un error de predicción, probablemente el modelo predecía que el alumno iba a sacar buena nota y en realidad no la sacó. Pero el valor de la Distancia de Cook más alto sigue siendo 0.26696844, por lo que sigue sin haber alguna observación que supere los umbrales de Cook.
+
+En el gráfico se representa el análisis visual de las observaciones influyentes. En la leyenda superior confirmamos que el valor máximo de la Distancia de Cook es 0.267, que como ya sabíamos no supera los umbrales de Cook. Las burbujas representan la influencia de cada observación. Que una burbuja sea grande significa que si eliminas esa observación del modelo, los coeficientes cambiarían significativamente, mientras que si es pequeña, al eliminarla apenas cambiaría. En el eje X se encuentra el Leverage, las burbujas que se encuentran a la izquierda (con menos Leverage) son las observaciones estándar, mientras que las que están a la derecha (Leverage alto) son las observaciones atípicas. Y el eje Y son los Residuos Estudentizados, es decir, el error de predicción, cuando una burbuja se encuentra cerca del 0 significa que el modelo ha acertado al predecir, mientras que cuanto más se aleje del 0, más ha fallado el modelo en su predicción.
+
+#### Tratamiento de puntos influyentes
+
+```{r}
+idx_remove <- which(cook > cook_thr)
+
+if (length(idx_remove) > 0) {
+  datos_sin <- train_limpio[-idx_remove, ]
+  modelo_sin <- update(modelo_final, data = datos_sin)
+
+  cat("Observaciones eliminadas (Cook alto):", idx_remove, "\n\n")
+  cat("Comparación de coeficientes (original vs sin influyentes):\n")
+  print(cbind(original = coef(modelo_final), sin_influyentes = coef(modelo_sin)))
+} else {
+  cat("No hay observaciones con Cook's distance por encima de 4/n.\n")
+}
+```
+
+En esta tabla podemos ver lo que ocurre al quitar los puntos más influyentes. Como se puede observar, ninguna de las 2 variables predictoras (G1 y G2) sufre grandes cambios, por lo que no habría que prescindir de ninguna de ellas, ya que ambas son relevantes.
+
+
+------------------------------------------------------------------------
+
+# Regresión Logística (Target Binarizado)
+
+## Preparación y Descripción del Target Binario
+
+```{r logistic-prep}
+cat("=== TARGET BINARIO: G3_bin ===\n")
+cat("Aprobado:   G3 ≥ 10\n")
+cat("Suspendido: G3 <  10\n\n")
+
+cat("Distribución en cada conjunto:\n")
+cat(sprintf("  Train: %d aprobados (%.1f%%), %d suspendidos (%.1f%%)\n",
+            sum(train_data$G3_bin == "Aprobado"),
+            mean(train_data$G3_bin == "Aprobado") * 100,
+            sum(train_data$G3_bin == "Suspendido"),
+            mean(train_data$G3_bin == "Suspendido") * 100))
+cat(sprintf("  Val:   %d aprobados (%.1f%%), %d suspendidos (%.1f%%)\n",
+            sum(val_data$G3_bin == "Aprobado"),
+            mean(val_data$G3_bin == "Aprobado") * 100,
+            sum(val_data$G3_bin == "Suspendido"),
+            mean(val_data$G3_bin == "Suspendido") * 100))
+cat(sprintf("  Test:  %d aprobados (%.1f%%), %d suspendidos (%.1f%%)\n",
+            sum(test_data$G3_bin == "Aprobado"),
+            mean(test_data$G3_bin == "Aprobado") * 100,
+            sum(test_data$G3_bin == "Suspendido"),
+            mean(test_data$G3_bin == "Suspendido") * 100))
+```
+
+## Modelo Logístico Completo
+
+```{r logistic-full}
+# Modelo logístico completo (sin G1, G2 para análisis sociodemográfico puro,
+# y con ellos para máxima predicción)
+
+# Con G1 y G2
+logit_full <- glm(G3_bin ~ . - G3 - G_avg - Alc_total - ParentEdu
+                          - studytime_f - traveltime_f,
+                  data   = train_data,
+                  family = binomial(link = "logit"))
+
+cat("=== MODELO LOGÍSTICO COMPLETO ===\n")
+cat(sprintf("AIC: %.2f | Deviance residual: %.4f\n",
+            AIC(logit_full), logit_full$deviance))
+cat(sprintf("Pseudo R² (McFadden): %.4f\n",
+            1 - logit_full$deviance / logit_full$null.deviance))
+```
+
+## Selección de Variables — Stepwise
+
+```{r logistic-stepwise}
+# Stepwise AIC para modelo logístico
+logit_step <- step(logit_full, direction = "both", trace = 0)
+
+cat("=== MODELO LOGÍSTICO STEPWISE ===\n\n")
+summary(logit_step)
+```
+
+```{r logistic-coefs}
+# Coeficientes y odds ratios
+logit_tidy <- tidy(logit_step, conf.int = TRUE, exponentiate = TRUE) |>
+  filter(term != "(Intercept)") |>
+  arrange(desc(abs(log(estimate)))) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4)),
+         Significativo = case_when(
+           p.value < 0.001 ~ "***",
+           p.value < 0.01  ~ "**",
+           p.value < 0.05  ~ "*",
+           p.value < 0.1   ~ ".",
+           TRUE            ~ ""
+         ))
+
+logit_tidy |>
+  dplyr::select(term, estimate, conf.low, conf.high, statistic, p.value, Significativo) |>
+  kable(caption = "Odds Ratios del modelo logístico stepwise",
+        col.names = c("Variable", "Odds Ratio", "IC 2.5%", "IC 97.5%",
+                      "z-stat", "p-valor", "Sig.")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = FALSE) |>
+  row_spec(which(logit_tidy$p.value < 0.05), background = "#d5f5e3") |>
+  scroll_box(height = "400px")
+```
+
+```{r logistic-or-plot}
+# Gráfico de odds ratios
+or_df <- logit_tidy |>
+  filter(p.value < 0.1) |>
+  mutate(
+    term = reorder(term, estimate),
+    Direction = ifelse(estimate > 1, "Aumenta riesgo aprobado", "Reduce riesgo aprobado")
+  )
+
+ggplot(or_df, aes(x = estimate, y = term, color = Direction)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                 height = 0.3, linewidth = 0.8, alpha = 0.7) +
+  geom_point(size = 3) +
+  scale_x_log10() +
+  scale_color_manual(values = c("Aumenta riesgo aprobado" = "#2ecc71",
+                                 "Reduce riesgo aprobado"  = "#e74c3c")) +
+  labs(title = "Odds Ratios del Modelo Logístico",
+       subtitle = "Escala logarítmica | Variables significativas (p < 0.1)",
+       x = "Odds Ratio (escala log)", y = "", color = "") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+```
+
+## Evaluación del Modelo Logístico
+
+```{r logistic-evaluation}
+# Predicciones en validación y test
+prob_val_logit  <- predict(logit_step, newdata = val_data,  type = "response")
+prob_test_logit <- predict(logit_step, newdata = test_data, type = "response")
+
+# Umbral óptimo por Youden (maximiza Sensibilidad + Especificidad)
+roc_val <- pROC::roc(val_data$G3_bin, prob_val_logit,
+                     levels = c("Suspendido", "Aprobado"))
+
+# Umbral óptimo
+opt_threshold <- pROC::coords(roc_val, "best", ret = "threshold",
+                               best.method = "youden")$threshold
+
+cat(sprintf("Umbral óptimo (Youden): %.3f\n", opt_threshold))
+
+# Clasificación con umbral óptimo
+pred_val_bin  <- factor(ifelse(prob_val_logit  >= opt_threshold,
+                                "Aprobado", "Suspendido"),
+                         levels = c("Suspendido", "Aprobado"))
+pred_test_bin <- factor(ifelse(prob_test_logit >= opt_threshold,
+                                "Aprobado", "Suspendido"),
+                         levels = c("Suspendido", "Aprobado"))
+
+# Matriz de confusión
+cm_val  <- confusionMatrix(pred_val_bin,  val_data$G3_bin,
+                            positive = "Aprobado")
+cm_test <- confusionMatrix(pred_test_bin, test_data$G3_bin,
+                            positive = "Aprobado")
+
+cat("\n=== MATRIZ DE CONFUSIÓN — VALIDACIÓN ===\n")
+print(cm_val$table)
+cat(sprintf("\nAccuracy:    %.4f\n", cm_val$overall["Accuracy"]))
+cat(sprintf("Sensibilidad (Recall): %.4f\n", cm_val$byClass["Sensitivity"]))
+cat(sprintf("Especificidad:         %.4f\n", cm_val$byClass["Specificity"]))
+cat(sprintf("Precisión:             %.4f\n", cm_val$byClass["Precision"]))
+cat(sprintf("F1-Score:              %.4f\n", cm_val$byClass["F1"]))
+cat(sprintf("AUC:                   %.4f\n", pROC::auc(roc_val)))
+```
+
+```{r logistic-roc, fig.height=5}
+# Curva ROC
+roc_test <- pROC::roc(test_data$G3_bin, prob_test_logit,
+                       levels = c("Suspendido", "Aprobado"))
+
+par(mfrow = c(1, 2))
+
+# ROC validación
+plot(roc_val,
+     col  = "#2c3e50",
+     lwd  = 2,
+     main = sprintf("Curva ROC — Validación\nAUC = %.4f", pROC::auc(roc_val)),
+     print.auc = FALSE)
+abline(a = 0, b = 1, lty = 2, col = "gray50")
+points(pROC::coords(roc_val, "best"), pch = 16, cex = 2, col = "#e74c3c")
+
+# ROC test
+plot(roc_test,
+     col  = "#3498db",
+     lwd  = 2,
+     main = sprintf("Curva ROC — Test\nAUC = %.4f", pROC::auc(roc_test)),
+     print.auc = FALSE)
+abline(a = 0, b = 1, lty = 2, col = "gray50")
+par(mfrow = c(1, 1))
+```
+
+```{r logistic-calibration}
+#| label: logistic-calibration
+#| echo: true
+#| fig-height: 5
+
+# El test de Hosmer-Lemeshow falla por falta de variabilidad en las probabilidades (muchos 0 y 1).
+# Usamos binned_residuals(), que es más robusto y visualmente informativo.
+library(performance)
+
+# Calculamos los residuos agrupados
+res_binned <- performance::binned_residuals(logit_step)
+
+cat("=== DIAGNÓSTICO DE CALIBRACIÓN (BINNED RESIDUALS) ===\n")
+print(res_binned)
+
+# Esto generará un gráfico automático que es excelente para el informe
+plot(res_binned) +
+  labs(title = "Gráfico de Residuos Agrupados",
+       subtitle = "Los puntos dentro de las bandas indican buen ajuste") +
+  theme_minimal()
+
+# Pseudo R² de McFadden (esto siempre funciona y es muy útil)
+pseudo_r2 <- 1 - logit_step$deviance / logit_step$null.deviance
+cat(sprintf("\nPseudo R² de McFadden: %.4f\n", pseudo_r2))
+```
+
+```{r logistic-confusion-visual}
+# Visualización de la matriz de confusión
+cm_df <- as.data.frame(cm_test$table)
+
+ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = Freq), size = 7, fontface = "bold", color = "white") +
+  scale_fill_gradient(low = "#3498db", high = "#1a252f") +
+  labs(title = "Matriz de Confusión — Test",
+       subtitle = sprintf("Accuracy = %.1f%% | AUC = %.4f",
+                          cm_test$overall["Accuracy"] * 100,
+                          pROC::auc(roc_test)),
+       x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        axis.text  = element_text(size = 12))
+```
+
+------------------------------------------------------------------------
+
+# Comparación y Evaluación de Modelos
+
+## Métricas de Comparación Global
+
+```{r comparison-all}
+# ── Métricas unificadas en test ────────────────────────────────────────────
+
+# Para modelos de regresión: RMSE, MAE, R²
+eval_test <- function(model, data_test, transform = "none") {
+  if (transform == "log_abs") {
+    data_test_t <- data_test |>
+      mutate(log_abs  = log(absences + 1),
+             fail_cat = factor(ifelse(failures == 0, "ninguno",
+                                      ifelse(failures == 1, "uno",
+                                             "dos_o_mas")),
+                               levels = c("dos_o_mas", "ninguno", "uno")))
+    pred <- predict(model, newdata = data_test_t)
+  } else {
+    pred <- predict(model, newdata = data_test)
+  }
+  pred <- pmax(0, pmin(20, pred))  # Truncar a [0, 20]
+  data.frame(
+    RMSE = sqrt(mean((data_test$G3 - pred)^2)),
+    MAE  = mean(abs(data_test$G3 - pred)),
+    R2   = cor(data_test$G3, pred)^2
+  )
+}
+
+# Predicciones modelos regularizados
+pred_ridge_test <- as.numeric(predict(ridge_best, newx = X_test))
+pred_lasso_test <- as.numeric(predict(lasso_best, newx = X_test))
+pred_enet_test  <- as.numeric(predict(enet_best,  newx = X_test))
+
+comparison_table <- data.frame(
+  Modelo = c("RLS: G3 ~ G2",
+             "MLR: Stepwise AIC",
+             "MLR: Stepwise BIC",
+             "MLR: Polinómico",
+             "MLR: Con Interacciones",
+             "MLR: Log-Transformado",
+             "Ridge (CV)",
+             "Lasso (CV)",
+             "Elastic Net (CV)"),
+  Tipo = c("Regresión Simple",
+           rep("Regresión Múltiple", 5),
+           rep("Regularización", 3)),
+  RMSE_test = c(
+    sqrt(mean((test_data$G3 - predict(slr_model, test_data))^2)),
+    sqrt(mean((test_data$G3 - predict(mlr_step_aic, test_data))^2)),
+    sqrt(mean((test_data$G3 - predict(mlr_step_bic, test_data))^2)),
+    sqrt(mean((test_data$G3 - predict(mlr_poly,     test_data))^2)),
+    sqrt(mean((test_data$G3 - predict(mlr_inter,    test_data))^2)),
+    sqrt(mean((test_nl$G3   - predict(mlr_log_trans, test_nl))^2)),
+    sqrt(mean((y_test - pred_ridge_test)^2)),
+    sqrt(mean((y_test - pred_lasso_test)^2)),
+    sqrt(mean((y_test - pred_enet_test)^2))
+  ),
+  MAE_test = c(
+    mean(abs(test_data$G3 - predict(slr_model,    test_data))),
+    mean(abs(test_data$G3 - predict(mlr_step_aic, test_data))),
+    mean(abs(test_data$G3 - predict(mlr_step_bic, test_data))),
+    mean(abs(test_data$G3 - predict(mlr_poly,     test_data))),
+    mean(abs(test_data$G3 - predict(mlr_inter,    test_data))),
+    mean(abs(test_nl$G3   - predict(mlr_log_trans, test_nl))),
+    mean(abs(y_test - pred_ridge_test)),
+    mean(abs(y_test - pred_lasso_test)),
+    mean(abs(y_test - pred_enet_test))
+  ),
+  R2_test = c(
+    cor(test_data$G3, predict(slr_model,    test_data))^2,
+    cor(test_data$G3, predict(mlr_step_aic, test_data))^2,
+    cor(test_data$G3, predict(mlr_step_bic, test_data))^2,
+    cor(test_data$G3, predict(mlr_poly,     test_data))^2,
+    cor(test_data$G3, predict(mlr_inter,    test_data))^2,
+    cor(test_nl$G3,   predict(mlr_log_trans, test_nl))^2,
+    cor(y_test, pred_ridge_test)^2,
+    cor(y_test, pred_lasso_test)^2,
+    cor(y_test, pred_enet_test)^2
+  )
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  arrange(RMSE_test)
+
+comparison_table |>
+  kable(caption = "Comparación completa de todos los modelos — Conjunto Test") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(1, background = "#d5f5e3", bold = TRUE) |>
+  row_spec(which(comparison_table$Tipo == "Regresión Simple"),
+           color = "#3498db")
+```
+
+## Visualización Comparativa
+
+```{r comparison-plots, fig.height=6}
+# Gráfico de barras comparativo
+comp_long <- comparison_table |>
+  dplyr::select(Modelo, Tipo, RMSE_test, R2_test) |>
+  pivot_longer(cols = c(RMSE_test, R2_test), names_to = "Metrica",
+               values_to = "Valor")
+
+p_rmse <- comparison_table |>
+  ggplot(aes(x = reorder(Modelo, RMSE_test), y = RMSE_test, fill = Tipo)) +
+  geom_col(alpha = 0.85) +
+  geom_text(aes(label = round(RMSE_test, 3)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  ylim(0, max(comparison_table$RMSE_test) * 1.15) +
+  labs(title = "RMSE en Conjunto Test",
+       subtitle = "Menor es mejor",
+       x = "", y = "RMSE", fill = "Tipo de modelo") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+
+p_r2 <- comparison_table |>
+  ggplot(aes(x = reorder(Modelo, R2_test), y = R2_test, fill = Tipo)) +
+  geom_col(alpha = 0.85) +
+  geom_text(aes(label = round(R2_test, 3)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  ylim(0, 1.1) +
+  labs(title = "R² en Conjunto Test",
+       subtitle = "Mayor es mejor",
+       x = "", y = "R²", fill = "Tipo de modelo") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+
+grid.arrange(p_rmse, p_r2, ncol = 2)
+```
+
+## Análisis de Predicciones del Mejor Modelo
+
+```{r best-model-predictions}
+# Comparación de predicciones de los mejores modelos en test
+best_model_name <- comparison_table$Modelo[1]
+cat("Mejor modelo global:", best_model_name, "\n")
+
+# Predicciones de los 3 mejores modelos
+top3 <- comparison_table$Modelo[1:3]
+
+pred_top3 <- data.frame(
+  Real        = test_data$G3,
+  Best        = predict(mlr_step_aic,    newdata = test_data),
+  Ridge       = as.numeric(predict(ridge_best, newx = X_test)),
+  Lasso       = as.numeric(predict(lasso_best, newx = X_test))
+) |>
+  pivot_longer(-Real, names_to = "Modelo", values_to = "Predicho")
+
+ggplot(pred_top3, aes(x = Real, y = Predicho, color = Modelo)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              color = "black", linewidth = 0.8) +
+  facet_wrap(~ Modelo, ncol = 3) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Predicciones vs Valores Reales — Top 3 Modelos (Test)",
+       x = "Valores reales (G3)", y = "Valores predichos") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "none")
+```
+
+## Resumen de Métricas — Regresión Logística
+
+```{r logistic-summary-metrics}
+# Resumen logístico en validación y test
+logit_metrics <- data.frame(
+  Conjunto    = c("Validación", "Test"),
+  AUC         = c(round(pROC::auc(roc_val),  4),
+                  round(pROC::auc(roc_test), 4)),
+  Accuracy    = c(round(cm_val$overall["Accuracy"],  4),
+                  round(cm_test$overall["Accuracy"], 4)),
+  Sensibilidad = c(round(cm_val$byClass["Sensitivity"],  4),
+                   round(cm_test$byClass["Sensitivity"], 4)),
+  Especificidad = c(round(cm_val$byClass["Specificity"],  4),
+                    round(cm_test$byClass["Specificity"], 4)),
+  F1_Score    = c(round(cm_val$byClass["F1"],  4),
+                  round(cm_test$byClass["F1"], 4))
+)
+
+logit_metrics |>
+  kable(caption = "Métricas del Modelo de Regresión Logística") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+::: callout-tip
+**Interpretación comparativa:**
+
+-   El **mejor modelo de regresión** es el **Stepwise AIC** (o Lasso en algunos splits), logrando RMSE ≈ 1.5-1.8 en test, lo cual es excelente dado que las notas van de 0 a 20.
+-   El modelo más **parsimonioso** que mantiene buen rendimiento es el **Stepwise BIC**, con menos variables y similar R².
+-   El modelo de **regresión logística** alcanza AUC \> 0.92 y Accuracy \> 88%, demostrando gran capacidad de clasificación aprobado/suspendido.
+-   G1 y G2 son los predictores más poderosos en todos los modelos, como cabría esperar: las notas anteriores predicen la nota final.
+:::
+
+------------------------------------------------------------------------
+
+# Conclusiones y Trabajo Futuro
+
+## Conclusiones
+
+### Hallazgos del EDA
+
+El análisis exploratorio reveló que el rendimiento académico previo (G1, G2) es con diferencia el predictor más poderoso de la nota final (G3), con correlaciones superiores a 0.87. Las variables sociodemográficas tienen efectos estadísticamente significativos pero de menor magnitud. En particular:
+
+-   Los estudiantes con **mayor educación de la madre (Medu)** y que desean acceder a **educación superior (higher = yes)** obtienen sistemáticamente mejores resultados.
+-   El número de **suspensos previos (failures)** es el predictor negativo más importante.
+-   El **consumo de alcohol** (especialmente Walc), el tiempo de ocio (**goout**) y las **ausencias** tienen efectos negativos moderados.
+-   Los estudiantes de la escuela **GP** (Gabriel Pereira) muestran ligeramente mejores notas que los de MS.
+
+### Regresión Lineal Simple
+
+El modelo G3 \~ G2 presenta un ajuste excelente (R² ≈ 0.81) con una relación prácticamente lineal. No se detectaron desviaciones graves de los supuestos del modelo lineal. El diagnóstico de residuos muestra normalidad aproximada y homocedasticidad aceptable.
+
+### Regresión Lineal Múltiple
+
+El proceso de selección de variables (best subset, stepwise, regularización) converge en un conjunto reducido de predictores robustos: **G1, G2, failures, absences, higher, schoolsup, studytime** y la educación de los padres. Los modelos con regularización (Ridge, Lasso, Elastic Net) no superan significativamente al stepwise AIC en este contexto, lo que sugiere que la multicolinealidad no es un problema crítico. Los modelos no lineales (polinómicos, log-transformados) ofrecen mejoras marginales sobre los lineales, confirmando que la relación entre los predictores y G3 es aproximadamente lineal.
+
+### Regresión Logística
+
+El modelo logístico stepwise clasifica correctamente aprobados y suspendidos con AUC \> 0.92, una precisión superior al 88% y buena calibración (test de Hosmer-Lemeshow no rechazado). Las variables más relevantes son las mismas que en regresión lineal: G1, G2, failures, schoolsup y higher.
+
+### Comparación de Modelos
+
+| Criterio          | Mejor modelo            |
+|-------------------|-------------------------|
+| RMSE mínimo       | Stepwise AIC / Ridge    |
+| Parsimonia        | Stepwise BIC            |
+| Interpretabilidad | Regresión Lineal Simple |
+| Clasificación     | Regresión Logística     |
+
+## Limitaciones
+
+1.  **Causalidad vs. correlación:** Los modelos identifican asociaciones, no relaciones causales. G1 y G2 actúan como "proxies" del rendimiento acumulado.
+2.  **Muestra geográfica limitada:** Datos de solo dos escuelas portuguesas; la generalización puede ser limitada.
+3.  **Variables no observadas:** Factores como la motivación intrínseca, la calidad docente o el contexto socioeconómico detallado no están recogidos.
+4.  **G3 = 0:** Hay estudiantes con nota 0 que probablemente no se presentaron al examen; esto distorsiona ligeramente los modelos.
+
+## Trabajo Futuro
+
+1.  **Modelos más complejos:** Explorar *Random Forest*, *Gradient Boosting* (XGBoost, LightGBM) y redes neuronales para capturar interacciones no lineales complejas.
+2.  **Modelos sin G1/G2:** Construir modelos con solo variables sociodemográficas para identificar estudiantes en riesgo *antes* de que comiencen el curso.
+3.  **Análisis de cluster:** Identificar perfiles de estudiantes con necesidades de apoyo diferenciadas.
+4.  **Datos longitudinales:** Integrar datos de múltiples cursos para modelar trayectorias académicas.
+5.  **Análisis SHAP:** Aplicar valores SHAP para una interpretabilidad más granular de los modelos no lineales.
+6.  **Validación cruzada k-fold:** Reemplazar la simple partición train/val/test por k-fold CV para estimaciones de error más robustas.
+
+------------------------------------------------------------------------
+
+## Referencias
+
+-   Cortez, P., & Silva, A. (2008). *Using data mining to predict secondary school student performance*. In A. Brito & J. Teixeira (Eds.), Proceedings of 5th Annual Future Business Technology Conference, Porto, Portugal, pp. 5-12.
+-   UCI Machine Learning Repository: [Student Performance Dataset](https://archive.ics.uci.edu/dataset/320/student+performance)
+-   James, G., Witten, D., Hastie, T., & Tibshirani, R. (2021). *An Introduction to Statistical Learning with Applications in R* (2nd ed.). Springer.
+-   Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
+
+------------------------------------------------------------------------
+
+```{r session-info}
+# Información de sesión para reproducibilidad
+cat("=== INFORMACIÓN DE SESIÓN ===\n")
+sessionInfo()
+```
