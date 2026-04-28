@@ -772,6 +772,8 @@ test_limpio <- test_data |>
   dplyr::select(-G3_bin, -G_avg)
 ```
 
+Es necesario eliminar estas dos variables ya que en el caso de "G3_bin" es una derivación de la variable que queremos predecir (G3), solo que en este caso únicamente categoriza la nota final como "suspenso" o "aprobado". Por otro lado, la variable "G_avg" es la media total, y si en su cálculo incluye la nota final (G3), como esta variable es la que queremos predecir, usar "G_avg" solo haría que el algoritmo no aprendiera a predecir G3, sino que se limitaría a despejar la ecuación de la media. Y, en el caso de que la media solo incluya las variables G1 y G2, aportaría la misma información que las variables individuales, que ya están en el modelo.
+
 ## Selección de variables y regularización
 
 Vamos a seleccionar el mejor subconjunto de variables.
@@ -913,7 +915,7 @@ metodos_automaticos <- data.frame(
 print(metodos_automaticos)
 ```
 
-Como se puede ver en la tabla, con los tres métodos hemos obtenido los mismos resultados. En todos los casos se selecciona un subconjunto de 10 variables predictoras (G2, sexM, schoolMS, G1, reasonhome, reasonother, reasonreputation, failures, addressU, freetime). También hemos obtenido que $R^2_{adj} = 0.8485 $, es decir, que nuestro modelo explica un 84.85% de la variabilidad total a partir únicamente de las 10 variables seleccionadas.
+Como se puede ver en la tabla, con los tres métodos hemos obtenido los mismos resultados. En todos los casos se selecciona un subconjunto de 10 variables predictoras (G2, sexM, schoolMS, G1, reasonhome, reasonother, reasonreputation, failures, addressU, freetime). También hemos obtenido que \$R\^2\_{adj} = 0.8485 \$, es decir, que nuestro modelo explica un 84.85% de la variabilidad total a partir únicamente de las 10 variables seleccionadas.
 
 Los asteriscos que se pueden ver en los resultados de cada método muestran, a partir del p-valor, la importancia de una variable para nuestro modelo. Cuantos más asteriscos tenga, más importante es. Y si no tiene ningún asterisco significa que no es una variable relevante, que no nos da suficiente información. En el resumen de cada uno de los métodos se puede ver que la variable más relevante es "G2" con $p-valor < 2e-16$.
 
@@ -1178,6 +1180,7 @@ comparacion_reg <- data.frame(
 
 print(comparacion_reg)
 ```
+
 Tras comparar los tres métodos de regularización, el modelo Ridge mantiene todas las variables predictoras (49) y es el de error más alto. Por otro lado, Elastic Net baja disminuye bastante el error y solo usa 8 variables predictoras. Sin embargo, como se puede ver en la tabla, la mejor opción es el modelo Lasso (1SE), ya que es el de error más bajo (0.7886541) y únicamente utiliza 2 variables, por lo que destaca por su simplicidad.
 
 ```{r}
@@ -1294,7 +1297,7 @@ vif_colineal <- vif(modelo_colineal)
 print(round(vif_colineal, 2))
 ```
 
-En estos resultados se puede ver que aunque el VIF de G1 y G2 sea casi 5, no llega a serlo y sigue estando dentro del margen aceptable (4.37 < 5), por lo que no hay multicolinealidad en nuestro modelo.
+En estos resultados se puede ver que aunque el VIF de G1 y G2 sea casi 5, no llega a serlo y sigue estando dentro del margen aceptable (4.37 \< 5), por lo que no hay multicolinealidad en nuestro modelo.
 
 ### Análisis de los residuos
 
@@ -1383,7 +1386,7 @@ influence_tbl <- tibble(
 influence_tbl %>% slice(1:10)
 ```
 
-Para que una observación sea influyente tiene que superar los umbrales de Cook (0.5 o 1), sin embargo, como se puede observar ninguna de nuestras observaciones los supera, ya que la primera observación que aparece en esta tabla es la 382 con una distancia de Cook de 0.26696844	, y como este es el valor máximo y no supera ninguno de los umbrales, ninguna observación lo hará.
+Para que una observación sea influyente tiene que superar los umbrales de Cook (0.5 o 1), sin embargo, como se puede observar ninguna de nuestras observaciones los supera, ya que la primera observación que aparece en esta tabla es la 382 con una distancia de Cook de 0.26696844 , y como este es el valor máximo y no supera ninguno de los umbrales, ninguna observación lo hará.
 
 ```{r}
 # Observaciones con al menos un DFBETAS grande
@@ -1439,471 +1442,245 @@ if (length(idx_remove) > 0) {
 
 En esta tabla podemos ver lo que ocurre al quitar los puntos más influyentes. Como se puede observar, ninguna de las 2 variables predictoras (G1 y G2) sufre grandes cambios, por lo que no habría que prescindir de ninguna de ellas, ya que ambas son relevantes.
 
+# Modelos de Regresión Generalizada
 
-------------------------------------------------------------------------
+En esta sección ampliaremos nuestro análisis utilizando Modelos Lineales Generalizados (GLM). La regresión lineal múltiple asume que la variable respuesta es continua y tiene una distribución normal. Sin embargo, en nuestro caso, las calificaciones son números enteros acotados entre 0 y 20, y existe una asimetría en su distribución.
 
-# Regresión Logística (Target Binarizado)
+Para estudiar esto, omitiremos las notas parciales (G1 y G2). Como vimos en los modelos anteriores, están fuertemente correlacionadas con la nota final (G3). Para evitar que estas variables absorban toda la variabilidad y poder analizar el impacto real de los factores sociales, familiares y académicos, planteamos los siguientes enfoques generalizados:
 
-## Preparación y Descripción del Target Binario
+1.  Un modelo de **Regresión Logística** para predecir la probabilidad de que un alumno apruebe o suspenda.
+2.  Un modelo de **Regresión de Poisson** para modelar la nota exacta como un dato de conteo.
+3.  Un modelo **Binomial Negativo** para corregir la posible sobredispersión de los datos.
 
-```{r logistic-prep}
-cat("=== TARGET BINARIO: G3_bin ===\n")
-cat("Aprobado:   G3 ≥ 10\n")
-cat("Suspendido: G3 <  10\n\n")
+## Regresión Logística (Predicción de Aprobado/Suspenso)
 
-cat("Distribución en cada conjunto:\n")
-cat(sprintf("  Train: %d aprobados (%.1f%%), %d suspendidos (%.1f%%)\n",
-            sum(train_data$G3_bin == "Aprobado"),
-            mean(train_data$G3_bin == "Aprobado") * 100,
-            sum(train_data$G3_bin == "Suspendido"),
-            mean(train_data$G3_bin == "Suspendido") * 100))
-cat(sprintf("  Val:   %d aprobados (%.1f%%), %d suspendidos (%.1f%%)\n",
-            sum(val_data$G3_bin == "Aprobado"),
-            mean(val_data$G3_bin == "Aprobado") * 100,
-            sum(val_data$G3_bin == "Suspendido"),
-            mean(val_data$G3_bin == "Suspendido") * 100))
-cat(sprintf("  Test:  %d aprobados (%.1f%%), %d suspendidos (%.1f%%)\n",
-            sum(test_data$G3_bin == "Aprobado"),
-            mean(test_data$G3_bin == "Aprobado") * 100,
-            sum(test_data$G3_bin == "Suspendido"),
-            mean(test_data$G3_bin == "Suspendido") * 100))
-```
+Utilizaremos la variable `G3_bin` (previamente creada en el preprocesamiento), donde los alumnos están clasificados como "Aprobado" (G3 $\geq$ 10) o "Suspendido".
 
-## Modelo Logístico Completo
+El modelo logístico utiliza la función de enlace *logit*:
 
-```{r logistic-full}
-# Modelo logístico completo (sin G1, G2 para análisis sociodemográfico puro,
-# y con ellos para máxima predicción)
+$$\text{logit}(p) = \log\left(\frac{p}{1-p}\right) = \beta_0 + \beta_1 X_1 + \dots + \beta_k X_k$$
 
-# Con G1 y G2
-logit_full <- glm(G3_bin ~ . - G3 - G_avg - Alc_total - ParentEdu
-                          - studytime_f - traveltime_f,
-                  data   = train_data,
-                  family = binomial(link = "logit"))
+```{r mrg-logistica}
+# Ajuste del modelo de Regresión Logística
+# Usamos train_data porque contiene la variable G3_bin
+modelo_logit <- glm(G3_bin ~ sex + address + studytime + failures + absences + higher + internet, 
+                    data = train_data, 
+                    family = binomial(link = "logit"))
 
-cat("=== MODELO LOGÍSTICO COMPLETO ===\n")
-cat(sprintf("AIC: %.2f | Deviance residual: %.4f\n",
-            AIC(logit_full), logit_full$deviance))
-cat(sprintf("Pseudo R² (McFadden): %.4f\n",
-            1 - logit_full$deviance / logit_full$null.deviance))
-```
+# Resumen del modelo
+summary(modelo_logit)
 
-## Selección de Variables — Stepwise
+# Extracción de las Odds Ratios (Exponencial de los coeficientes) e Intervalos de Confianza
+odds_ratios <- exp(cbind(OR = coef(modelo_logit), confint(modelo_logit)))
 
-```{r logistic-stepwise}
-# Stepwise AIC para modelo logístico
-logit_step <- step(logit_full, direction = "both", trace = 0)
-
-cat("=== MODELO LOGÍSTICO STEPWISE ===\n\n")
-summary(logit_step)
-```
-
-```{r logistic-coefs}
-# Coeficientes y odds ratios
-logit_tidy <- tidy(logit_step, conf.int = TRUE, exponentiate = TRUE) |>
-  filter(term != "(Intercept)") |>
-  arrange(desc(abs(log(estimate)))) |>
-  mutate(across(where(is.numeric), ~ round(.x, 4)),
-         Significativo = case_when(
-           p.value < 0.001 ~ "***",
-           p.value < 0.01  ~ "**",
-           p.value < 0.05  ~ "*",
-           p.value < 0.1   ~ ".",
-           TRUE            ~ ""
-         ))
-
-logit_tidy |>
-  dplyr::select(term, estimate, conf.low, conf.high, statistic, p.value, Significativo) |>
-  kable(caption = "Odds Ratios del modelo logístico stepwise",
-        col.names = c("Variable", "Odds Ratio", "IC 2.5%", "IC 97.5%",
-                      "z-stat", "p-valor", "Sig.")) |>
-  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
-                font_size = 12, full_width = FALSE) |>
-  row_spec(which(logit_tidy$p.value < 0.05), background = "#d5f5e3") |>
-  scroll_box(height = "400px")
-```
-
-```{r logistic-or-plot}
-# Gráfico de odds ratios
-or_df <- logit_tidy |>
-  filter(p.value < 0.1) |>
-  mutate(
-    term = reorder(term, estimate),
-    Direction = ifelse(estimate > 1, "Aumenta riesgo aprobado", "Reduce riesgo aprobado")
-  )
-
-ggplot(or_df, aes(x = estimate, y = term, color = Direction)) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
-  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
-                 height = 0.3, linewidth = 0.8, alpha = 0.7) +
-  geom_point(size = 3) +
-  scale_x_log10() +
-  scale_color_manual(values = c("Aumenta riesgo aprobado" = "#2ecc71",
-                                 "Reduce riesgo aprobado"  = "#e74c3c")) +
-  labs(title = "Odds Ratios del Modelo Logístico",
-       subtitle = "Escala logarítmica | Variables significativas (p < 0.1)",
-       x = "Odds Ratio (escala log)", y = "", color = "") +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
-```
-
-## Evaluación del Modelo Logístico
-
-```{r logistic-evaluation}
-# Predicciones en validación y test
-prob_val_logit  <- predict(logit_step, newdata = val_data,  type = "response")
-prob_test_logit <- predict(logit_step, newdata = test_data, type = "response")
-
-# Umbral óptimo por Youden (maximiza Sensibilidad + Especificidad)
-roc_val <- pROC::roc(val_data$G3_bin, prob_val_logit,
-                     levels = c("Suspendido", "Aprobado"))
-
-# Umbral óptimo
-opt_threshold <- pROC::coords(roc_val, "best", ret = "threshold",
-                               best.method = "youden")$threshold
-
-cat(sprintf("Umbral óptimo (Youden): %.3f\n", opt_threshold))
-
-# Clasificación con umbral óptimo
-pred_val_bin  <- factor(ifelse(prob_val_logit  >= opt_threshold,
-                                "Aprobado", "Suspendido"),
-                         levels = c("Suspendido", "Aprobado"))
-pred_test_bin <- factor(ifelse(prob_test_logit >= opt_threshold,
-                                "Aprobado", "Suspendido"),
-                         levels = c("Suspendido", "Aprobado"))
-
-# Matriz de confusión
-cm_val  <- confusionMatrix(pred_val_bin,  val_data$G3_bin,
-                            positive = "Aprobado")
-cm_test <- confusionMatrix(pred_test_bin, test_data$G3_bin,
-                            positive = "Aprobado")
-
-cat("\n=== MATRIZ DE CONFUSIÓN — VALIDACIÓN ===\n")
-print(cm_val$table)
-cat(sprintf("\nAccuracy:    %.4f\n", cm_val$overall["Accuracy"]))
-cat(sprintf("Sensibilidad (Recall): %.4f\n", cm_val$byClass["Sensitivity"]))
-cat(sprintf("Especificidad:         %.4f\n", cm_val$byClass["Specificity"]))
-cat(sprintf("Precisión:             %.4f\n", cm_val$byClass["Precision"]))
-cat(sprintf("F1-Score:              %.4f\n", cm_val$byClass["F1"]))
-cat(sprintf("AUC:                   %.4f\n", pROC::auc(roc_val)))
-```
-
-```{r logistic-roc, fig.height=5}
-# Curva ROC
-roc_test <- pROC::roc(test_data$G3_bin, prob_test_logit,
-                       levels = c("Suspendido", "Aprobado"))
-
-par(mfrow = c(1, 2))
-
-# ROC validación
-plot(roc_val,
-     col  = "#2c3e50",
-     lwd  = 2,
-     main = sprintf("Curva ROC — Validación\nAUC = %.4f", pROC::auc(roc_val)),
-     print.auc = FALSE)
-abline(a = 0, b = 1, lty = 2, col = "gray50")
-points(pROC::coords(roc_val, "best"), pch = 16, cex = 2, col = "#e74c3c")
-
-# ROC test
-plot(roc_test,
-     col  = "#3498db",
-     lwd  = 2,
-     main = sprintf("Curva ROC — Test\nAUC = %.4f", pROC::auc(roc_test)),
-     print.auc = FALSE)
-abline(a = 0, b = 1, lty = 2, col = "gray50")
-par(mfrow = c(1, 1))
-```
-
-```{r logistic-calibration}
-#| label: logistic-calibration
-#| echo: true
-#| fig-height: 5
-
-# El test de Hosmer-Lemeshow falla por falta de variabilidad en las probabilidades (muchos 0 y 1).
-# Usamos binned_residuals(), que es más robusto y visualmente informativo.
-library(performance)
-
-# Calculamos los residuos agrupados
-res_binned <- performance::binned_residuals(logit_step)
-
-cat("=== DIAGNÓSTICO DE CALIBRACIÓN (BINNED RESIDUALS) ===\n")
-print(res_binned)
-
-# Esto generará un gráfico automático que es excelente para el informe
-plot(res_binned) +
-  labs(title = "Gráfico de Residuos Agrupados",
-       subtitle = "Los puntos dentro de las bandas indican buen ajuste") +
-  theme_minimal()
-
-# Pseudo R² de McFadden (esto siempre funciona y es muy útil)
-pseudo_r2 <- 1 - logit_step$deviance / logit_step$null.deviance
-cat(sprintf("\nPseudo R² de McFadden: %.4f\n", pseudo_r2))
-```
-
-```{r logistic-confusion-visual}
-# Visualización de la matriz de confusión
-cm_df <- as.data.frame(cm_test$table)
-
-ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
-  geom_tile(color = "white", linewidth = 0.8) +
-  geom_text(aes(label = Freq), size = 7, fontface = "bold", color = "white") +
-  scale_fill_gradient(low = "#3498db", high = "#1a252f") +
-  labs(title = "Matriz de Confusión — Test",
-       subtitle = sprintf("Accuracy = %.1f%% | AUC = %.4f",
-                          cm_test$overall["Accuracy"] * 100,
-                          pROC::auc(roc_test)),
-       x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia") +
-  theme_minimal(base_size = 13) +
-  theme(plot.title = element_text(face = "bold"),
-        axis.text  = element_text(size = 12))
-```
-
-------------------------------------------------------------------------
-
-# Comparación y Evaluación de Modelos
-
-## Métricas de Comparación Global
-
-```{r comparison-all}
-# ── Métricas unificadas en test ────────────────────────────────────────────
-
-# Para modelos de regresión: RMSE, MAE, R²
-eval_test <- function(model, data_test, transform = "none") {
-  if (transform == "log_abs") {
-    data_test_t <- data_test |>
-      mutate(log_abs  = log(absences + 1),
-             fail_cat = factor(ifelse(failures == 0, "ninguno",
-                                      ifelse(failures == 1, "uno",
-                                             "dos_o_mas")),
-                               levels = c("dos_o_mas", "ninguno", "uno")))
-    pred <- predict(model, newdata = data_test_t)
-  } else {
-    pred <- predict(model, newdata = data_test)
-  }
-  pred <- pmax(0, pmin(20, pred))  # Truncar a [0, 20]
-  data.frame(
-    RMSE = sqrt(mean((data_test$G3 - pred)^2)),
-    MAE  = mean(abs(data_test$G3 - pred)),
-    R2   = cor(data_test$G3, pred)^2
-  )
-}
-
-# Predicciones modelos regularizados
-pred_ridge_test <- as.numeric(predict(ridge_best, newx = X_test))
-pred_lasso_test <- as.numeric(predict(lasso_best, newx = X_test))
-pred_enet_test  <- as.numeric(predict(enet_best,  newx = X_test))
-
-comparison_table <- data.frame(
-  Modelo = c("RLS: G3 ~ G2",
-             "MLR: Stepwise AIC",
-             "MLR: Stepwise BIC",
-             "MLR: Polinómico",
-             "MLR: Con Interacciones",
-             "MLR: Log-Transformado",
-             "Ridge (CV)",
-             "Lasso (CV)",
-             "Elastic Net (CV)"),
-  Tipo = c("Regresión Simple",
-           rep("Regresión Múltiple", 5),
-           rep("Regularización", 3)),
-  RMSE_test = c(
-    sqrt(mean((test_data$G3 - predict(slr_model, test_data))^2)),
-    sqrt(mean((test_data$G3 - predict(mlr_step_aic, test_data))^2)),
-    sqrt(mean((test_data$G3 - predict(mlr_step_bic, test_data))^2)),
-    sqrt(mean((test_data$G3 - predict(mlr_poly,     test_data))^2)),
-    sqrt(mean((test_data$G3 - predict(mlr_inter,    test_data))^2)),
-    sqrt(mean((test_nl$G3   - predict(mlr_log_trans, test_nl))^2)),
-    sqrt(mean((y_test - pred_ridge_test)^2)),
-    sqrt(mean((y_test - pred_lasso_test)^2)),
-    sqrt(mean((y_test - pred_enet_test)^2))
-  ),
-  MAE_test = c(
-    mean(abs(test_data$G3 - predict(slr_model,    test_data))),
-    mean(abs(test_data$G3 - predict(mlr_step_aic, test_data))),
-    mean(abs(test_data$G3 - predict(mlr_step_bic, test_data))),
-    mean(abs(test_data$G3 - predict(mlr_poly,     test_data))),
-    mean(abs(test_data$G3 - predict(mlr_inter,    test_data))),
-    mean(abs(test_nl$G3   - predict(mlr_log_trans, test_nl))),
-    mean(abs(y_test - pred_ridge_test)),
-    mean(abs(y_test - pred_lasso_test)),
-    mean(abs(y_test - pred_enet_test))
-  ),
-  R2_test = c(
-    cor(test_data$G3, predict(slr_model,    test_data))^2,
-    cor(test_data$G3, predict(mlr_step_aic, test_data))^2,
-    cor(test_data$G3, predict(mlr_step_bic, test_data))^2,
-    cor(test_data$G3, predict(mlr_poly,     test_data))^2,
-    cor(test_data$G3, predict(mlr_inter,    test_data))^2,
-    cor(test_nl$G3,   predict(mlr_log_trans, test_nl))^2,
-    cor(y_test, pred_ridge_test)^2,
-    cor(y_test, pred_lasso_test)^2,
-    cor(y_test, pred_enet_test)^2
-  )
-) |>
-  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
-  arrange(RMSE_test)
-
-comparison_table |>
-  kable(caption = "Comparación completa de todos los modelos — Conjunto Test") |>
+as.data.frame(odds_ratios) |>
+  mutate(across(everything(), ~ round(.x, 3))) |>
+  kable(caption = "Odds Ratios del Modelo Logístico") |>
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
-  row_spec(1, background = "#d5f5e3", bold = TRUE) |>
-  row_spec(which(comparison_table$Tipo == "Regresión Simple"),
-           color = "#3498db")
+  row_spec(which(odds_ratios[,1] < 1), background = "#fef9e7") |>
+  row_spec(which(odds_ratios[,1] > 1), background = "#d5f5e3")
 ```
 
-## Visualización Comparativa
+**Interpretación de las Odds Ratios (OR):** El modelo muestra que variables como los fracasos previos (`failures`) tienen un impacto negativo y significativo en la probabilidad de aprobar. Al observar las *Odds Ratios*, vemos que por cada suspenso previo, las probabilidades de aprobar se reducen drásticamente (OR \< 1). Por el contrario, el deseo de cursar estudios superiores (`higheryes`) multiplica a favor las probabilidades de éxito (OR \> 1).
 
-```{r comparison-plots, fig.height=6}
-# Gráfico de barras comparativo
-comp_long <- comparison_table |>
-  dplyr::select(Modelo, Tipo, RMSE_test, R2_test) |>
-  pivot_longer(cols = c(RMSE_test, R2_test), names_to = "Metrica",
-               values_to = "Valor")
+## Regresión de Poisson y Evaluación de Sobredispersión
 
-p_rmse <- comparison_table |>
-  ggplot(aes(x = reorder(Modelo, RMSE_test), y = RMSE_test, fill = Tipo)) +
-  geom_col(alpha = 0.85) +
-  geom_text(aes(label = round(RMSE_test, 3)), hjust = -0.1, size = 3) +
-  coord_flip() +
-  scale_fill_brewer(palette = "Set2") +
-  ylim(0, max(comparison_table$RMSE_test) * 1.15) +
-  labs(title = "RMSE en Conjunto Test",
-       subtitle = "Menor es mejor",
-       x = "", y = "RMSE", fill = "Tipo de modelo") +
-  theme_minimal(base_size = 11) +
-  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+Vamos a intentar predecir la nota exacta teniendo en cuenta que la estaremos tratando como una variable de conteo. Para esto usamos la familia Poisson, con el logaritmo neperiano como función de enlace:
 
-p_r2 <- comparison_table |>
-  ggplot(aes(x = reorder(Modelo, R2_test), y = R2_test, fill = Tipo)) +
-  geom_col(alpha = 0.85) +
-  geom_text(aes(label = round(R2_test, 3)), hjust = -0.1, size = 3) +
-  coord_flip() +
-  scale_fill_brewer(palette = "Set2") +
-  ylim(0, 1.1) +
-  labs(title = "R² en Conjunto Test",
-       subtitle = "Mayor es mejor",
-       x = "", y = "R²", fill = "Tipo de modelo") +
-  theme_minimal(base_size = 11) +
-  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+$$\log(\lambda) = \beta_0 + \beta_1 X_1 + \dots + \beta_k X_k$$
 
-grid.arrange(p_rmse, p_r2, ncol = 2)
+```{r mrg-poisson}
+# Ajuste del modelo de Regresión de Poisson
+modelo_poisson <- glm(G3 ~ sex + studytime + failures + absences + Medu + Fedu + famrel, 
+                      data = train_data,  
+                      family = poisson(link = "log"))
+
+summary(modelo_poisson)
+
+# Comprobación de sobredispersión (Devianza residual / Grados de libertad)
+sobredispersion <- modelo_poisson$deviance / modelo_poisson$df.residual
+cat("Ratio de Sobredispersión:", round(sobredispersion, 3), "\n")
 ```
 
-## Análisis de Predicciones del Mejor Modelo
+La regresión de Poisson asume que la media y la varianza son iguales. Al calcular el Ratio de Sobredispersión, si el valor es cercano a 1, el modelo de Poisson es adecuado.En caso contrario, si el ratio es mucho mayor que 1, significa que hay sobredispersión en los datos y significa que otro modelo nos podría ayudar más en cara a nuestro estudio.
 
-```{r best-model-predictions}
-# Comparación de predicciones de los mejores modelos en test
-best_model_name <- comparison_table$Modelo[1]
-cat("Mejor modelo global:", best_model_name, "\n")
+En este caso, vemos como el Ratio de Sobredispersión es superior a 1, y tenemos un problema de sobredispersión, que significa que hay más varianza en los datos que la que asume el modelo. Esto provoca que los errores estándar calculados sean artificialmente bajos, llevándonos a creer que ciertas variables son significativas cuando en realidad no lo son.
 
-# Predicciones de los 3 mejores modelos
-top3 <- comparison_table$Modelo[1:3]
+## Corrección con Modelo Binomial Negativo
 
-pred_top3 <- data.frame(
-  Real        = test_data$G3,
-  Best        = predict(mlr_step_aic,    newdata = test_data),
-  Ridge       = as.numeric(predict(ridge_best, newx = X_test)),
-  Lasso       = as.numeric(predict(lasso_best, newx = X_test))
-) |>
-  pivot_longer(-Real, names_to = "Modelo", values_to = "Predicho")
+Para solucionar la sobredispersión detectada en el modelo de Poisson sin perder la interpretabilidad de la regresión de conteo, ajustaremos un modelo de **Regresión Binomial Negativa**. Este modelo flexibiliza la restricción de varianza introduciendo un nuevo parámetro de dispersión \$θ\$ que nos permite obtener errores estándar precisos y evaluar correctamente la significatividad de nuestras variables.
 
-ggplot(pred_top3, aes(x = Real, y = Predicho, color = Modelo)) +
-  geom_point(alpha = 0.5, size = 1.5) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
-              color = "black", linewidth = 0.8) +
-  facet_wrap(~ Modelo, ncol = 3) +
-  scale_color_brewer(palette = "Set1") +
-  labs(title = "Predicciones vs Valores Reales — Top 3 Modelos (Test)",
-       x = "Valores reales (G3)", y = "Valores predichos") +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"), legend.position = "none")
-```
+```{r}
+# Ajuste del modelo de Regresión Binomial Negativa
+modelo_nb <- glm.nb(G3 ~ sex + studytime + failures + absences + Medu + Fedu + famrel, 
+                    data = train_data)
 
-## Resumen de Métricas — Regresión Logística
+summary(modelo_nb)
 
-```{r logistic-summary-metrics}
-# Resumen logístico en validación y test
-logit_metrics <- data.frame(
-  Conjunto    = c("Validación", "Test"),
-  AUC         = c(round(pROC::auc(roc_val),  4),
-                  round(pROC::auc(roc_test), 4)),
-  Accuracy    = c(round(cm_val$overall["Accuracy"],  4),
-                  round(cm_test$overall["Accuracy"], 4)),
-  Sensibilidad = c(round(cm_val$byClass["Sensitivity"],  4),
-                   round(cm_test$byClass["Sensitivity"], 4)),
-  Especificidad = c(round(cm_val$byClass["Specificity"],  4),
-                    round(cm_test$byClass["Specificity"], 4)),
-  F1_Score    = c(round(cm_val$byClass["F1"],  4),
-                  round(cm_test$byClass["F1"], 4))
-)
+# Comparación de modelos mediante AIC
+comparacion_glm <- data.frame(
+  Modelo = c("Poisson", "Binomial Negativa"),
+  AIC = c(AIC(modelo_poisson), AIC(modelo_nb)))
 
-logit_metrics |>
-  kable(caption = "Métricas del Modelo de Regresión Logística") |>
+comparacion_glm |>
+  kable(caption = "Comparación AIC: Poisson vs Binomial Negativa") |>
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
-::: callout-tip
-**Interpretación comparativa:**
+Como podemos observar, si el modelo de Binomial Negativa es mejor ajuste que el de Poisson, normalmente veremos una reducción importante en el valor AIC (Akaike Information Criterion), lo que indica una mejor calidad del modelo penalizando la complejidad del modelo. Además al corregir los errores estándar por la sobredispersión, podemos ver qué variables siguen siendo estadísticamente significativas, son aquellas que están marcadas con asteriscos.
 
--   El **mejor modelo de regresión** es el **Stepwise AIC** (o Lasso en algunos splits), logrando RMSE ≈ 1.5-1.8 en test, lo cual es excelente dado que las notas van de 0 a 20.
--   El modelo más **parsimonioso** que mantiene buen rendimiento es el **Stepwise BIC**, con menos variables y similar R².
--   El modelo de **regresión logística** alcanza AUC \> 0.92 y Accuracy \> 88%, demostrando gran capacidad de clasificación aprobado/suspendido.
--   G1 y G2 son los predictores más poderosos en todos los modelos, como cabría esperar: las notas anteriores predicen la nota final.
-:::
+## Conclusiones de Modelación Generalizada
 
-------------------------------------------------------------------------
+Como hemos podido comprobar, la regresión logística nos muestra que es altamente efectiva para evaluar el riesgo de suspenso académico, destacando que el peso de los fracasos académicos, el ausentismo y la ambición de acceder a la educación superior son los predictores sociológicos más determinantes en el éxito de la asignatura.
+
+Por otro lado, la regresión de poisson, nos muestra ciertas limitaciones ligadas a la sobredispersión de los datos.Al aplicar la regresión Binomial Negativa, logramos acomodar esa varianza extra, haciendo que nuestras inferencias sobre las variables continuas o de conteo sean mucho más fiables.
+
+En conclusión, transformar la calificación final en una variable binaria (aprobado/suspenso) mediante el modelo logístico resulta ser la mejor opción porque es la más sólida e interpretable de este apartado. Este enfoque no solo acaba con el problema de la asimetría en la distribución de las notas de 0 a 20, sino que además ofrece conclusiones más directas y aplicables para posibles intervenciones educativas en el centro escolar.
+
+# Comparación y Evaluación Final de Modelos
+
+En esta sección final, pondremos a prueba los mejores modelos desarrollados a lo largo del estudio utilizando el conjunto de datos de prueba (`test_data`), el cual reservamos al inicio y no ha sido visto por los modelos durante su entrenamiento. Esto nos permitirá evaluar su verdadera capacidad de generalización ante datos nuevos.
+
+Abordaremos la evaluación desde nuestros dos enfoques analíticos: la predicción exacta de la nota (Regresión) y la predicción del éxito académico (Clasificación).
+
+## Evaluación del Modelo de Regresión (Predicción Numérica)
+
+Durante la fase de regresión múltiple y regularización, determinamos que el Modelo Lasso era la opción óptima por su equilibrio entre bajo error y gran simplicidad (seleccionó únicamente las variables G1 y G2).
+
+Vamos a calcular las métricas definitivas de este modelo sobre el conjunto de test.
+
+```{r eval-regression}
+# Predicciones del modelo Lasso 1SE sobre el conjunto de test
+# Nota: X_test y y_test se definieron en el apartado de regularización
+pred_test_lasso <- predict(lasso_model, s = lambda_lasso_1se, newx = X_test)
+
+# Cálculo de métricas
+rmse_lasso <- sqrt(mean((pred_test_lasso - y_test)^2))
+mae_lasso  <- mean(abs(pred_test_lasso - y_test))
+# R-cuadrado en test (Correlación al cuadrado entre real y predicho)
+r2_lasso   <- cor(y_test, pred_test_lasso)^2
+
+# Tabla de métricas
+metricas_reg <- data.frame(
+  Métrica = c("RMSE (Raíz del Error Cuadrático Medio)", 
+              "MAE (Error Absoluto Medio)", 
+              "R² (Coef. de Determinación)"),
+  Valor = c(rmse_lasso, mae_lasso, r2_lasso)
+) |>
+  mutate(Valor = round(Valor, 4))
+
+metricas_reg |>
+  kable(caption = "Rendimiento del Modelo Lasso (1SE) en Test") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Gráfico de Valores Reales vs Predichos
+df_plot_reg <- data.frame(Real = y_test, Predicho = as.vector(pred_test_lasso))
+
+ggplot(df_plot_reg, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.6, color = "#2c3e50", size = 2) +
+  geom_abline(slope = 1, intercept = 0, color = "#e74c3c", linewidth = 1.2, linetype = "dashed") +
+  geom_smooth(method = "lm", color = "#3498db", se = FALSE) +
+  labs(title = "Rendimiento en Test: Valores Reales vs. Predichos (Lasso 1SE)",
+       subtitle = "La línea roja discontinua representa la predicción perfecta",
+       x = "Nota Final Real (G3)", y = "Nota Final Predicha") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Conclusión de la Regresión:** El modelo Lasso logra explicar una gran parte de la varianza en datos no vistos (R² alto) con un error medio absoluto (MAE) muy bajo.
+
+Si observamos el gráfico de dispersión, la línea roja discontinua representa el escenario perfecto (donde la predicción coincide exactamente con la realidad). La fuerte agrupación de los puntos grises alrededor de esta línea ideal demuestra visualmente el alto valor del R². Además, la línea de tendencia de nuestro modelo (azul continua) se solapa casi a la perfección con la diagonal ideal en el grueso de las notas (entre 8 y 16). Los ligeros desvíos o mayor dispersión que se aprecian en los extremos (notas muy bajas o excepcionalmente altas) son habituales, ya que el modelo tiende a ser más conservador en esos rangos.
+
+En conclusión, este análisis confirma el acierto de haber usado la regularización Lasso: al penalizar y eliminar el resto de variables sociodemográficas, el modelo evitó el sobreajuste y demostró que la evaluación continua (G1 y G2) es un indicador tan robusto que basta por sí solo para construir un modelo parsimonioso pero tremendamente preciso.
+
+## Evaluación del Modelo de Clasificación (Regresión Logística)
+
+En nuestro análisis sociológico, excluimos las notas parciales para entender qué factores impactan en la probabilidad de aprobar o suspender. Utilizaremos el modelo de Regresión Logística para predecir sobre el conjunto de test y evaluaremos su rendimiento mediante una Matriz de Confusión y la Curva ROC.
+
+-   **La Matriz de Confusión:** Es una tabla que desglosa los aciertos y errores del modelo al comparar sus predicciones con la realidad. Nos permite ver de un vistazo no solo los éxitos (Verdaderos Positivos y Verdaderos Negativos), sino también el tipo de error que estamos cometiendo: Falsos Positivos (predecir que un alumno aprueba cuando en realidad suspende, el error más crítico en este contexto escolar) y Falsos Negativos (predecir que suspende cuando en realidad aprueba).
+
+-   **La Curva ROC y el AUC:** La Curva ROC evalúa visualmente la capacidad del modelo para distinguir entre ambas clases (Aprobados y Suspendidos) a medida que variamos nuestro umbral de exigencia. El **AUC** (Área Bajo la Curva) resume este gráfico en una puntuación: un valor de 0.50 equivale a clasificar al azar (como lanzar una moneda), mientras que 1.0 representa un modelo perfecto. En la práctica, un AUC cercano o superior a 0.70 indica un poder de discriminación bastante sólido.
+
+```{r}
+# Predicción de probabilidades en test
+prob_test_logit <- predict(modelo_logit, newdata = test_data, type = "response")
+
+# Convertir probabilidades a clases (Umbral 0.5)
+clase_pred_logit <- ifelse(prob_test_logit > 0.5, "Aprobado", "Suspendido")
+clase_pred_logit <- factor(clase_pred_logit, levels = c("Suspendido", "Aprobado"))
+
+# Generar la Matriz de Confusión usando la librería caret
+matriz_conf <- confusionMatrix(data = clase_pred_logit, 
+                               reference = test_data$G3_bin, 
+                               positive = "Aprobado")
+
+# Extraer métricas clave para la tabla
+metricas_clf <- data.frame(
+  Métrica = c("Exactitud (Accuracy)", "Sensibilidad (Recall Aprobados)", "Especificidad (Recall Suspendidos)"),
+  Valor = c(matriz_conf$overall["Accuracy"], 
+            matriz_conf$byClass["Sensitivity"], 
+            matriz_conf$byClass["Specificity"])
+) |>
+  mutate(Valor = round(Valor, 4))
+
+metricas_clf |>
+  kable(caption = "Métricas de Evaluación - Regresión Logística") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Mostrar la matriz de confusión directamente
+matriz_conf$table
+
+# Cálculo y visualización de la Curva ROC
+# Aseguramos que la librería pROC está cargada
+library(pROC)
+
+# Crear el objeto ROC
+roc_obj <- roc(response = test_data$G3_bin, predictor = prob_test_logit, 
+               levels = c("Suspendido", "Aprobado"))
+auc_val <- auc(roc_obj)
+
+# Graficar
+ggroc(roc_obj, color = "#2c3e50", linewidth = 1.2) +
+  geom_abline(slope = 1, intercept = 1, color = "#e74c3c", linetype = "dashed") +
+  annotate("text", x = 0.25, y = 0.25, 
+           label = paste("AUC =", round(auc_val, 3)), 
+           size = 5, color = "#3498db", fontface = "bold") +
+  labs(title = "Curva ROC - Modelo de Regresión Logística",
+       subtitle = "Evaluación de la capacidad de discriminación del modelo",
+       x = "Especificidad", y = "Sensibilidad") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Conclusión de Clasificación:** A diferencia del modelo numérico, aquí nos enfrentábamos al reto sociológico de predecir el éxito escolar sin tener en cuenta el rendimiento previo (G1 y G2).
+
+Por un lado, la Matriz de Confusión nos permite desglosar exactamente dónde acierta y dónde falla el modelo. Aunque la Exactitud (Accuracy) nos da el porcentaje global de aciertos, la Sensibilidad (capacidad de detectar a los que aprueban) y la Especificidad (capacidad de detectar a los que suspenden) son vitales en el ámbito educativo. En este contexto, un Falso Positivo (predecir que un alumno va a aprobar cuando en realidad va a suspender) es el error más costoso, ya que ese estudiante se quedaría sin recibir el apoyo temprano que necesita.
+
+Por otro lado, la Curva ROC confirma visualmente la capacidad de error del modelo. La diagonal discontinua de color rojo representa un clasificador aleatorio (AUC = 0.5). Cuanto más se eleva y aleja nuestra curva azul hacia la esquina superior izquierda, mejor logra nuestro modelo separar a los alumnos aptos de los no aptos. Un AUC superior a 0.70 nos indica un poder discriminativo bastante sólido.
+
+En definitiva, esto demuestra que, basándonos puramente en factores sociológicos, académicos y de comportamiento (como el número de suspensos históricos, las ausencias o el deseo de cursar educación superior), el centro educativo posee las herramientas necesarias para perfilar e identificar tempranamente a los estudiantes en riesgo de exclusión académica, mucho antes de que se sienten a realizar su primer examen.
 
 # Conclusiones y Trabajo Futuro
 
-## Conclusiones
+## Conclusiones Generales
 
-### Hallazgos del EDA
+A lo largo de este estudio predictivo sobre el rendimiento académico de los estudiantes en la asignatura de Lengua Portuguesa, hemos desarrollado y comparado múltiples enfoques de modelización, lo que nos permite extraer las siguientes conclusiones clave:
 
-El análisis exploratorio reveló que el rendimiento académico previo (G1, G2) es con diferencia el predictor más poderoso de la nota final (G3), con correlaciones superiores a 0.87. Las variables sociodemográficas tienen efectos estadísticamente significativos pero de menor magnitud. En particular:
+1.  **El peso determinante de la evaluación continua:** Tanto la regresión lineal simple como el modelo de regularización múltiple revelaron que el rendimiento académico a corto plazo es el predictor más robusto de la nota final. El modelo **Lasso (1SE)** fue excepcionalmente eficiente al penalizar los coeficientes, reduciendo un espacio de 67 variables predictoras a únicamente dos: **G1** y **G2**. Esto demuestra empíricamente que el esfuerzo y las notas parciales absorben la mayor parte de la varianza explicativa del éxito final.
 
--   Los estudiantes con **mayor educación de la madre (Medu)** y que desean acceder a **educación superior (higher = yes)** obtienen sistemáticamente mejores resultados.
--   El número de **suspensos previos (failures)** es el predictor negativo más importante.
--   El **consumo de alcohol** (especialmente Walc), el tiempo de ocio (**goout**) y las **ausencias** tienen efectos negativos moderados.
--   Los estudiantes de la escuela **GP** (Gabriel Pereira) muestran ligeramente mejores notas que los de MS.
+2.  **Factores de riesgo sociológico y conductual:** Al excluir de forma intencionada las notas parciales (G1 y G2) para analizar el impacto del entorno del alumno, la **Regresión Logística** demostró ser una herramienta muy valiosa. El modelo logró identificar con precisión señales de alerta temprana: un historial previo de materias suspensas (`failures`), un alto nivel de ausentismo (`absences`) y la falta de aspiraciones para cursar estudios superiores (`higher = no`) aumentan drásticamente la probabilidad de que un alumno suspenda.
 
-### Regresión Lineal Simple
-
-El modelo G3 \~ G2 presenta un ajuste excelente (R² ≈ 0.81) con una relación prácticamente lineal. No se detectaron desviaciones graves de los supuestos del modelo lineal. El diagnóstico de residuos muestra normalidad aproximada y homocedasticidad aceptable.
-
-### Regresión Lineal Múltiple
-
-El proceso de selección de variables (best subset, stepwise, regularización) converge en un conjunto reducido de predictores robustos: **G1, G2, failures, absences, higher, schoolsup, studytime** y la educación de los padres. Los modelos con regularización (Ridge, Lasso, Elastic Net) no superan significativamente al stepwise AIC en este contexto, lo que sugiere que la multicolinealidad no es un problema crítico. Los modelos no lineales (polinómicos, log-transformados) ofrecen mejoras marginales sobre los lineales, confirmando que la relación entre los predictores y G3 es aproximadamente lineal.
-
-### Regresión Logística
-
-El modelo logístico stepwise clasifica correctamente aprobados y suspendidos con AUC \> 0.92, una precisión superior al 88% y buena calibración (test de Hosmer-Lemeshow no rechazado). Las variables más relevantes son las mismas que en regresión lineal: G1, G2, failures, schoolsup y higher.
-
-### Comparación de Modelos
-
-| Criterio          | Mejor modelo            |
-|-------------------|-------------------------|
-| RMSE mínimo       | Stepwise AIC / Ridge    |
-| Parsimonia        | Stepwise BIC            |
-| Interpretabilidad | Regresión Lineal Simple |
-| Clasificación     | Regresión Logística     |
-
-## Limitaciones
-
-1.  **Causalidad vs. correlación:** Los modelos identifican asociaciones, no relaciones causales. G1 y G2 actúan como "proxies" del rendimiento acumulado.
-2.  **Muestra geográfica limitada:** Datos de solo dos escuelas portuguesas; la generalización puede ser limitada.
-3.  **Variables no observadas:** Factores como la motivación intrínseca, la calidad docente o el contexto socioeconómico detallado no están recogidos.
-4.  **G3 = 0:** Hay estudiantes con nota 0 que probablemente no se presentaron al examen; esto distorsiona ligeramente los modelos.
+3.  **Elección del modelo y tratamiento de la variable respuesta:** El análisis demostró la importancia de adecuar el modelo a la naturaleza de los datos. Intentar modelar la nota exacta mediante regresión de conteo (Poisson) introdujo problemas teóricos (sobredispersión y límites naturales de la nota entre 0 y 20). Por ello, transformar el problema en una clasificación binaria (Aprobado/Suspendido) mediante regresión logística resultó ser la estrategia matemática y funcionalmente más sólida para aislar los factores sociales.
 
 ## Trabajo Futuro
 
-1.  **Modelos más complejos:** Explorar *Random Forest*, *Gradient Boosting* (XGBoost, LightGBM) y redes neuronales para capturar interacciones no lineales complejas.
-2.  **Modelos sin G1/G2:** Construir modelos con solo variables sociodemográficas para identificar estudiantes en riesgo *antes* de que comiencen el curso.
-3.  **Análisis de cluster:** Identificar perfiles de estudiantes con necesidades de apoyo diferenciadas.
-4.  **Datos longitudinales:** Integrar datos de múltiples cursos para modelar trayectorias académicas.
-5.  **Análisis SHAP:** Aplicar valores SHAP para una interpretabilidad más granular de los modelos no lineales.
-6.  **Validación cruzada k-fold:** Reemplazar la simple partición train/val/test por k-fold CV para estimaciones de error más robustas.
+A partir de los hallazgos de este proyecto, se proponen las siguientes líneas de mejora e investigación futura:
 
-------------------------------------------------------------------------
+-   **Exploración de Modelos No Lineales:** Dado que la regresión logística y lineal asumen relaciones aditivas, sería enriquecedor aplicar algoritmos basados en árboles de decisión. Estos modelos podrían capturar interacciones complejas e intrínsecas.
+
+-   **Análisis Comparativo entre Disciplinas:** El dataset original de Cortez y Silva incluye también los registros de la asignatura de Matemáticas. Replicar este pipeline analítico completo con dichos datos permitiría realizar un estudio comparativo y descubrir si los factores sociodemográficos que penalizan a un alumno en humanidades (Portugués) son los mismos que le afectan en las ciencias.
+
+-   **Desarrollo de un Sistema de Alerta Temprana:** Desde una perspectiva de aplicabilidad práctica, el modelo de regresión logística desarrollado podría integrarse en el software de gestión del centro educativo. Al introducir los datos sociodemográficos y de asistencia del alumno a principios de curso, el sistema podría calcular su probabilidad de suspenso, permitiendo a los tutores realizar intervenciones pedagógicas preventivas antes de que se produzca el fracaso escolar.
 
 ## Referencias
 
@@ -1911,11 +1688,3 @@ El modelo logístico stepwise clasifica correctamente aprobados y suspendidos co
 -   UCI Machine Learning Repository: [Student Performance Dataset](https://archive.ics.uci.edu/dataset/320/student+performance)
 -   James, G., Witten, D., Hastie, T., & Tibshirani, R. (2021). *An Introduction to Statistical Learning with Applications in R* (2nd ed.). Springer.
 -   Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
-
-------------------------------------------------------------------------
-
-```{r session-info}
-# Información de sesión para reproducibilidad
-cat("=== INFORMACIÓN DE SESIÓN ===\n")
-sessionInfo()
-```
