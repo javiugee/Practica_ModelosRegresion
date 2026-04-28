@@ -1,0 +1,686 @@
+---
+title: "Práctica: Modelos de Regresión para Predicción de Notas Finales"
+subtitle: "Grado en Ciencia e Ingeniería de Datos - URJC"
+author:
+  - name: "Javier Ugena García"
+  - name: "Soraya Burgos Modrego"
+  - name: "Elba Jares Darriba"
+date: today
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-title: "Índice de Contenidos"
+    toc-float: true
+    number-sections: true
+    theme: cosmo
+    highlight-style: github
+    code-fold: false
+    code-tools: false
+    fig-width: 9
+    fig-height: 6
+    fig-align: center
+    embed-resources: true
+    df-print: kable
+    css: styles.css
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+editor: visual
+---
+
+------------------------------------------------------------------------
+
+# Introducción y Descripción del Problema
+
+## Contexto del Estudio
+
+Este informe analiza el **rendimiento académico de estudiantes de secundaria** en Portugal, utilizando el conocido dataset *Student Performance* disponible en el [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/320/student+performance). El dataset fue recopilado por Cortez y Silva (2008) mediante cuestionarios escolares y registros académicos en dos escuelas portuguesas: **Gabriel Pereira (GP)** y **Mousinho da Silveira (MS)**.
+
+El objetivo principal de esta práctica es construir y evaluar modelos de regresión que permitan **predecir la nota final (G3)** de los estudiantes en la asignatura de **Portugués**, a partir de una amplia variedad de variables sociodemográficas, familiares y académicas.
+
+## Dataset Utilizado
+
+Se trabaja con el fichero `student-por.csv`, correspondiente a la asignatura de **Lengua Portuguesa**, que contiene **649 observaciones** y **33 variables**. Se ha elegido este dataset por su mayor tamaño muestral respecto al de Matemáticas (395 obs.), lo que proporciona mayor robustez estadística para la modelización.
+
+::: callout-note
+**Variables objetivo:**
+
+-   **G3** (variable continua): Nota final del curso, de 0 a 20 → usada en regresión lineal.
+-   **G3_bin** (variable binaria): Aprobado (G3 ≥ 10) / Suspendido (G3 \< 10) → usada en regresión logística.
+:::
+
+## Estructura del Informe
+
+El análisis sigue la siguiente estructura:
+
+1.  Preparación de datos y análisis exploratorio (EDA)
+2.  Regresión lineal simple
+3.  Regresión lineal múltiple (selección de variables, regularización, no linealidades)
+4.  Regresión logística (target binarizado)
+5.  Comparación y evaluación de modelos
+6.  Conclusiones y trabajo futuro
+
+------------------------------------------------------------------------
+
+# Preparación de Datos y Análisis Exploratorio
+
+## Carga de Librerías y Datos
+
+```{r setup-libraries}
+# ── Librerías de manipulación y visualización ──────────────────────────────
+library(tidyverse)       # manipulación y visualización general
+library(ggplot2)         # gráficos
+library(GGally)          # pairs plots
+library(corrplot)        # correlogramas
+library(knitr)           # tablas
+library(kableExtra)      # tablas mejoradas
+
+# ── Librerías de modelado ──────────────────────────────────────────────────
+library(caret)           # partición, entrenamiento y validación
+library(glmnet)          # regularización Lasso/Ridge/ElasticNet
+library(leaps)           # selección de subconjuntos
+library(MASS)            # stepwise AIC/BIC
+library(car)             # VIF, diagnóstico
+library(lmtest)          # tests de hipótesis sobre residuos
+library(nortest)         # test de normalidad Anderson-Darling
+
+# ── Librerías de evaluación y diagnóstico ─────────────────────────────────
+library(pROC)            # curvas ROC
+library(ResourceSelection) # Hosmer-Lemeshow
+library(gridExtra)       # grid de gráficos
+library(ggfortify)       # autoplot para lm
+library(broom)           # tidy model outputs
+library(performance)     # check_model
+library(see)             # visualización performance
+
+# Semilla para reproducibilidad
+set.seed(42)
+```
+
+```{r load-data}
+# ── Carga del dataset de Portugués ────────────────────────────────────────
+student_por <- read.table("student-por.csv", sep = ";", header = TRUE,
+                          stringsAsFactors = TRUE)
+
+cat("Dimensiones del dataset:", dim(student_por), "\n")
+cat("Variables:", ncol(student_por), "\n")
+cat("Observaciones:", nrow(student_por), "\n")
+```
+
+## Inspección Inicial
+
+```{r initial-inspection}
+# Vista general de la estructura
+str(student_por)
+```
+
+## Valores Ausentes y Calidad de los Datos
+
+```{r missing-values}
+# Comprobamos si hay valores nulos en el dataset
+colSums(is.na(student_por))
+```
+
+El dataset no presenta valores ausentes, lo que facilita el análisis y modelado posterior. Sin embargo, se deben revisar posibles valores atípicos o inconsistencias en las variables numéricas y categóricas durante el EDA.
+
+## Ingeniería de Variables
+
+```{r feature-engineering}
+# ── Preprocesamiento ───────────────────────────────────────────────────────
+student <- student_por |>
+  mutate(
+    # Variable objetivo binarizada para regresión logística
+    G3_bin = factor(ifelse(G3 >= 10, "Aprobado", "Suspendido"),
+                    levels = c("Suspendido", "Aprobado")),
+
+    # Promedio de notas parciales
+    G_avg  = (G1 + G2) / 2,
+
+    # Consumo total de alcohol (laboral + fin de semana)
+    Alc_total = Dalc + Walc,
+
+    # Educación media de los padres
+    ParentEdu = (Medu + Fedu) / 2,
+
+    # Recodificación de variables ordinales como numéricas (ya lo son)
+    # Aseguramos que las binarias sean factores
+    across(c(school, sex, address, famsize, Pstatus,
+             schoolsup, famsup, paid, activities, nursery,
+             higher, internet, romantic), as.factor),
+
+    # Variables ordinales como ordered factors para análisis
+    studytime_f = factor(studytime, levels = 1:4,
+                         labels = c("<2h","2-5h","5-10h",">10h"), ordered = TRUE),
+    traveltime_f = factor(traveltime, levels = 1:4,
+                          labels = c("<15min","15-30min","30-60min",">1h"), ordered = TRUE)
+  )
+
+cat("Dataset procesado:\n")
+cat(" - Observaciones:", nrow(student), "\n")
+cat(" - Variables totales:", ncol(student), "\n")
+cat("\nDistribución de G3_bin:\n")
+print(table(student$G3_bin))
+cat("\nTasa de aprobados:", round(mean(student$G3 >= 10) * 100, 1), "%\n")
+```
+
+## Partición Train / Validation / Test (60/20/20)
+
+```{r}
+# ── Partición estratificada de los datos (60/20/20) ──────────────────────────
+# Dividimos el dataset para asegurar que el modelo aprenda con unos datos,
+# se ajuste con otros y finalmente se pruebe con datos que nunca ha visto.
+
+n <- nrow(student)
+
+# 1. Separamos el 20% para el test final (evaluación definitiva)
+idx_test  <- createDataPartition(student$G3, p = 0.20, list = FALSE)
+test_data <- student[idx_test, ]
+tv_data   <- student[-idx_test, ]
+
+# 2. Del 80% restante, reservamos un 25% para validación (que es el 20% del total)
+# y el resto para el entrenamiento (60% del total)
+idx_val    <- createDataPartition(tv_data$G3, p = 0.25, list = FALSE)
+val_data   <- tv_data[idx_val, ]
+train_data <- tv_data[-idx_val, ]
+
+# Resumen sencillo de la división de la muestra
+cat("Resumen de las particiones:\n")
+cat(paste("- Entrenamiento (60%):", nrow(train_data), "estudiantes\n"))
+cat(paste("- Validación    (20%):", nrow(val_data), "estudiantes\n"))
+cat(paste("- Test          (20%):", nrow(test_data), "estudiantes\n"))
+cat(paste("Total de la muestra:", n, "observaciones\n"))
+
+# Comprobamos que las notas medias son parecidas en los tres grupos
+# Esto nos confirma que la división ha sido equilibrada (estratificada)
+cat("\nConsistencia de la variable objetivo (Media de G3):\n")
+cat(sprintf("  Entrenamiento: %.2f | Validación: %.2f | Test: %.2f\n",
+            mean(train_data$G3), mean(val_data$G3), mean(test_data$G3)))
+```
+
+
+## Análisis Exploratorio de Datos (EDA)
+
+### Variable Objetivo: G3
+
+```{r eda-target}
+p1 <- ggplot(student, aes(x = G3)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 21,
+                 fill = "#2c3e50", color = "white", alpha = 0.85) +
+  geom_density(color = "#e74c3c", linewidth = 1.2) +
+  geom_vline(xintercept = mean(student$G3), linetype = "dashed",
+             color = "#3498db", linewidth = 1) +
+  geom_vline(xintercept = median(student$G3), linetype = "dotted",
+             color = "#2ecc71", linewidth = 1) +
+  annotate("text", x = mean(student$G3) + 0.5, y = 0.13,
+           label = paste0("Media: ", round(mean(student$G3), 1)),
+           color = "#3498db", hjust = 0, size = 3.5) +
+  annotate("text", x = median(student$G3) - 0.5, y = 0.11,
+           label = paste0("Mediana: ", median(student$G3)),
+           color = "#2ecc71", hjust = 1, size = 3.5) +
+  labs(title = "Distribución de la Nota Final (G3)",
+       x = "Nota Final (G3)", y = "Densidad") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p2 <- ggplot(student, aes(x = G3_bin, fill = G3_bin)) +
+  geom_bar(alpha = 0.85, color = "white") +
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = -0.5, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("Suspendido" = "#e74c3c", "Aprobado" = "#2ecc71")) +
+  labs(title = "Distribución Aprobados/Suspendidos",
+       x = "", y = "Número de estudiantes", fill = "") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "none")
+
+p3 <- ggplot(student, aes(sample = G3)) +
+  stat_qq(color = "#2c3e50", alpha = 0.6) +
+  stat_qq_line(color = "#e74c3c", linewidth = 1) +
+  labs(title = "Q-Q Plot de G3",
+       x = "Cuantiles teóricos", y = "Cuantiles observados") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p4 <- ggplot(student, aes(x = "", y = G3)) +
+  geom_boxplot(fill = "#3498db", alpha = 0.7, outlier.color = "#e74c3c",
+               outlier.size = 2) +
+  geom_jitter(width = 0.1, alpha = 0.2, color = "#2c3e50") +
+  labs(title = "Boxplot de G3", x = "", y = "Nota Final") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+**1. ¿Cómo se reparten las notas? (Histograma y Gráfico de Barras)**
+
+Al observar el **histograma de densidad**, vemos que la mayoría de los alumnos se agrupan en el centro, con una **media de 11.9** y una **mediana de 12**. Esto nos indica que el rendimiento es bastante consistente. La mayoría de los estudiantes aprueba con notas modestas (entre 10 y 14).  
+
+**2. La salud de nuestros datos (Q-Q Plot y Boxplot)**
+
+Para saber si nuestros modelos de regresión serán fiables, debemos mirar la "forma" de estos datos:
+
+- **Q-Q Plot de G3**: Este gráfico nos dice si las notas siguen una distribución normal (la línea roja ideal). Vemos que los puntos siguen muy bien la línea en la parte central, pero se desvían en los extremos. Especialmente en la parte baja, observamos un grupo de puntos que "caen" a cero; estos son alumnos con un rendimiento muy por debajo de lo esperado que podrían ser casos especiales para el modelo.  
+
+- **Boxplot de G3**: El "cajón" azul representa dónde está el 50% central de los alumnos. Es una caja compacta, lo que refuerza la idea de que no hay una dispersión salvaje de notas. Sin embargo, los puntos aislados en la parte inferior (cerca del 0) confirman la existencia de outliers o valores atípicos: alumnos que, por razones que deberemos investigar, sacaron una nota nula.  
+
+**Conclusión**: Los datos nos muestran un escenario optimista donde la mayoría aprueba, pero también nos alertan de que existe un pequeño grupo de alumnos en riesgo (notas cercanas a 0) que el modelo de regresión simple podría tener dificultades para predecir con exactitud si no añadimos más información.
+
+### Variables Numéricas: Distribuciones y Correlaciones
+
+```{r eda-numeric}
+# Variables numéricas continuas/ordinales relevantes
+num_vars <- c("age", "Medu", "Fedu", "traveltime", "studytime", "failures",
+              "famrel", "freetime", "goout", "Dalc", "Walc", "health",
+              "absences", "G1", "G2", "G3")
+
+num_data <- student[, num_vars]
+
+# Correlograma
+cor_matrix <- cor(num_data, use = "complete.obs")
+
+corrplot(cor_matrix,
+         method = "color",
+         type   = "upper",
+         order  = "hclust",
+         tl.cex = 0.8,
+         tl.col = "black",
+         addCoef.col = "black",
+         number.cex  = 0.65,
+         col = colorRampPalette(c("#e74c3c", "white", "#2c3e50"))(200),
+         title = "Matriz de Correlaciones — Variables Numéricas",
+         mar   = c(0, 0, 1.5, 0))
+```
+
+
+
+```{r eda-correlations-table}
+# Top correlaciones con G3
+cor_g3 <- data.frame(
+  Variable    = rownames(cor_matrix),
+  Correlacion = cor_matrix[, "G3"]
+) |>
+  filter(Variable != "G3") |>
+  arrange(desc(abs(Correlacion))) |>
+  mutate(
+    Correlacion = round(Correlacion, 3),
+    Magnitud    = case_when(
+      abs(Correlacion) >= 0.5 ~ "Alta",
+      abs(Correlacion) >= 0.3 ~ "Moderada",
+      abs(Correlacion) >= 0.1 ~ "Baja",
+      TRUE                    ~ "Muy baja"
+    )
+  )
+
+# Mostramos la tabla
+cor_g3 |>
+  kable(caption = "Correlaciones de las variables numéricas con G3",
+        col.names = c("Variable", "Correlación con G3", "Magnitud"),
+        row.names = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which(abs(cor_g3$Correlacion) >= 0.5), background = "#d5f5e3") |>
+  row_spec(which(abs(cor_g3$Correlacion) >= 0.3 & abs(cor_g3$Correlacion) < 0.5),
+           background = "#fef9e7")
+```
+
+Esta matriz de correlaciones de variables numéricas podemos separarla en 3 grupos:
+
+- **Correlaciones muy altas**: G1 (r ≈ 0.83) y G2 (r ≈ 0.92) son los mejores predictores individuales de la nota final, lo que sugiere que el rendimiento a lo largo del curso es muy consistente.
+- **Correlaciones moderadas**: Variables como studytime, Medu y Fedu muestran correlaciones moderadas con G3, lo que indica que el tiempo de estudio, la educación de los padres y las ausencias también influyen en el rendimiento final.
+- **Correlaciones bajas o negativas**: Variables como failures presentan correlaciones negativas leves, lo que sugiere que el número de suspensos previos, el consumo de alcohol y la vida social pueden tener un impacto negativo en las notas finales.
+
+**Conclusión** :Las notas parciales (G1 y G2) son los mejores indicadores de la nota final (G3), pero también hay otros factores académicos y personales que influyen en el rendimiento, aunque en menor medida. Esto nos da una buena base para construir modelos de regresión que incluyan estas variables clave.
+
+### Variables Categóricas vs G3
+
+```{r eda-categorical-simple, fig.height=12, fig.width=10}
+# 1. Creamos un estilo común para todos los gráficos de cajas (boxplots)
+# Esto hará que los gráficos sean más limpios y el texto no se amontone
+mi_estilo <- theme_minimal(base_size = 12) + 
+             theme(plot.title = element_text(face = "bold", hjust = 0.5),
+                   axis.text.x = element_text(angle = 0))
+
+# 2. Creamos los gráficos
+# Usamos 'fill' para que cada caja tenga color y sea más visual
+p1 <- ggplot(student, aes(x = school, y = G3, fill = school)) + geom_boxplot() + labs(title="Colegio") + mi_estilo
+p2 <- ggplot(student, aes(x = sex, y = G3, fill = sex)) + geom_boxplot() + labs(title="Género") + mi_estilo
+p3 <- ggplot(student, aes(x = address, y = G3, fill = address)) + geom_boxplot() + labs(title="Zona (U/R)") + mi_estilo
+p4 <- ggplot(student, aes(x = famsize, y = G3, fill = famsize)) + geom_boxplot() + labs(title="Tamaño Familia") + mi_estilo
+p5 <- ggplot(student, aes(x = Pstatus, y = G3, fill = Pstatus)) + geom_boxplot() + labs(title="Estado Padres") + mi_estilo
+p6 <- ggplot(student, aes(x = guardian, y = G3, fill = guardian)) + geom_boxplot() + labs(title="Tutor Legal") + mi_estilo
+p7 <- ggplot(student, aes(x = Mjob, y = G3, fill = Mjob)) + geom_boxplot() + labs(title="Trabajo Madre") + mi_estilo
+p8 <- ggplot(student, aes(x = Fjob, y = G3, fill = Fjob)) + geom_boxplot() + labs(title="Trabajo Padre") + mi_estilo
+
+# 3. Los organizamos en 2 columnas para que sean grandes y legibles
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, 
+             ncol = 2, 
+             top = "Análisis de Factores Sociales en el Rendimiento")
+```
+
+Al observar los gráficos más detallados, podemos extraer conclusiones valiosas:
+
+- **Estabilidad frente a la estructura familiar**: Resulta sorprendente ver que variables como el tamaño de la familia (famsize) o si los padres viven juntos o separados (Pstatus) apenas desplazan la mediana de las notas. Esto sugiere que, en esta muestra, la estructura del hogar no es un factor determinante para el éxito académico.  
+
+- **El sesgo del género y el centro**: Confirmamos visualmente que en la asignatura de Portugués, las mujeres mantienen una consistencia mayor en sus notas, mientras que en el colegio Gabriel Pereira (GP) se alcanzan picos de rendimiento más altos que en el Mousinho da Silveira (MS).  
+
+- **Influencia profesional**: El impacto más claro proviene del trabajo de los padres. Los hijos de profesionales de la salud o la enseñanza no solo tienen medianas más altas, sino que presentan menos casos de notas extremadamente bajas. Esto refuerza la idea de que el capital cultural y el acompañamiento educativo en casa son motores del rendimiento.  
+
+- **Tutoría legal**: Cuando el tutor es alguien distinto al padre o la madre (other), la variabilidad aumenta y la mediana tiende a bajar ligeramente, lo que podría indicar situaciones de mayor vulnerabilidad académica.  
+
+- **Conclusión del análisis**: Este análisis exploratorio nos indica que, aunque el entorno familiar "clásico" no parece penalizar al alumno, factores como la formación de los padres y la elección del centro sí marcan una diferencia. Estos hallazgos nos servirán de base para decidir qué variables incluir en nuestro futuro modelo de regresión múltiple.
+
+```{r eda-key-relationships, fig.height=8, fig.width=10}
+# 1. El factor académico: G2 vs G3 (La relación más fuerte)
+p_acad <- ggplot(student, aes(x = G2, y = G3)) +
+  geom_jitter(alpha = 0.3, color = "#2c3e50") + # jitter para ver puntos solapados
+  geom_smooth(method = "lm", color = "#e74c3c", se = FALSE) +
+  labs(title = "Inercia Académica", subtitle = "G2 vs G3", x = "Nota 2º Periodo", y = "Nota Final") +
+  theme_minimal()
+
+# 2. El factor esfuerzo: Study Time vs G3
+p_study <- ggplot(student, aes(x = as.factor(studytime), y = G3, fill = as.factor(studytime))) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  scale_fill_brewer(palette = "Blues") +
+  labs(title = "Impacto del Estudio", subtitle = "Horas semanales", x = "Categoría de tiempo", y = "Nota Final") +
+  theme_minimal()
+
+# 3. El factor riesgo: Failures vs G3
+p_fail <- ggplot(student, aes(x = as.factor(failures), y = G3, fill = as.factor(failures))) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("#2ecc71", "#f1c40f", "#e67e22", "#e74c3c")) +
+  labs(title = "El Lastre del Fracaso", subtitle = "Suspensos previos", x = "Nº de suspensos", y = "Nota Final") +
+  theme_minimal()
+
+# 4. El factor social: Absences vs G3
+p_abs <- ggplot(student, aes(x = absences, y = G3)) +
+  geom_point(alpha = 0.4, color = "#3498db") +
+  geom_smooth(method = "loess", color = "#2c3e50", se = FALSE) +
+  labs(title = "Efecto del Absentismo", subtitle = "Faltas a clase", x = "Nº de ausencias", y = "Nota Final") +
+  theme_minimal()
+
+# Organizamos los 4 gráficos en un panel 2x2
+grid.arrange(p_acad, p_study, p_fail, p_abs, ncol = 2)
+```
+
+Tras el análisis exploratorio general, profundizamos en las cuatro dinámicas que parecen dictar la nota final del estudiante. Este panel nos permite contrastar el peso del rendimiento previo frente a los hábitos y el historial del alumno.  
+
+**1. Inercia Académica (G2 vs G3)**
+
+Es, sin duda, la relación más potente de todo el estudio.  
+
+- **Observación**: Los puntos se alinean casi perfectamente con la línea roja de regresión.  
+
+- **Conclusión**: Existe una continuidad casi absoluta; es muy difícil romper la trayectoria académica en el último trimestre. Sin embargo, hay un pequeño grupo de puntos en el eje horizontal (nota final 0) que representan alumnos que, teniendo notas medias en G2, "desaparecieron" o fracasaron totalmente al final.  
+
+**2. El Impacto del Estudio (Horas semanales)**
+
+Aquí analizamos si el esfuerzo se traduce en resultados.  
+
+- **Observación**: A medida que subimos de categoría de tiempo de estudio (del 1 al 4), tanto la mediana como el límite inferior de la caja suben.  
+
+- **Conclusión**: Estudiar más no garantiza un 20, pero sí "eleva el suelo" del rendimiento. Los alumnos que estudian poco (categoría 1) tienen una dispersión mucho mayor y más riesgo de suspender que los de la categoría 4, donde la mayoría se estabiliza por encima del 12.  
+
+**3. El Lastre del Fracaso (Suspensos previos)**
+
+Este gráfico revela el peso psicológico y académico de los antecedentes.  
+
+- **Observación**: Hay un salto dramático entre tener 0 suspensos y tener 1. La mediana cae de un 12 a un 9 aproximadamente.  
+
+- **Conclusión**: El primer suspenso previo es el que más penaliza. Curiosamente, la diferencia entre tener 1, 2 o 3 suspensos no es tan grande; lo que realmente marca la diferencia entre el éxito y el riesgo es mantener el historial limpio de "failures".  
+
+4. Efecto del Absentismo (Faltas a clase)
+
+A diferencia de los anteriores, este gráfico de dispersión con línea suavizada muestra un patrón más complejo.  
+
+- **Observación**: La línea se mantiene relativamente plana hasta las 10-15 ausencias. A partir de ahí, la variabilidad aumenta.  
+
+- **Conclusión**: El sistema parece tolerar un nivel bajo de absentismo sin que la nota se resienta drásticamente. No obstante, las faltas excesivas suelen estar ligadas a perfiles muy específicos que o bien fracasan estrepitosamente o bien son casos excepcionales que logran aprobar pese a no asistir.
+
+
+
+**Hallazgos clave del EDA:**
+
+-   **G1 y G2** tienen una correlación muy alta con G3, lo que indica una gran consistencia en el rendimiento a lo largo del curso.
+-   **failures** (número de suspensos previos) presenta correlación negativa importante.
+-   **higher** (deseo de estudiar educación superior) está fuertemente asociado con mejores notas finales.
+-   Variables como **studytime**, **Medu** y **Fedu** muestran correlaciones moderadas positivas.
+-   El alcohol (**Dalc**, **Walc**) y **goout** presentan correlaciones negativas leves.
+
+------------------------------------------------------------------------
+
+# Regresión Lineal Simple
+
+## Selección del Predictor
+
+Se elige **G2** (nota del segundo trimestre) como predictor simple por ser la variable más correlacionada con G3 y por su evidente interpretación causal: el rendimiento acumulado predice el resultado final.
+
+```{r slr-scatter}
+ggplot(train_data, aes(x = G2, y = G3)) +
+  geom_point(alpha = 0.4, color = "#2c3e50", size = 2) +
+  geom_smooth(method = "lm", color = "#e74c3c", linewidth = 1.2, se = TRUE,
+              fill = "#e74c3c", alpha = 0.15) +
+  geom_smooth(method = "loess", color = "#3498db", linewidth = 1, linetype = "dashed",
+              se = FALSE) +
+  labs(title = "Relación G2 (2º Trimestre) vs G3 (Nota Final)",
+       subtitle = "Rojo: regresión lineal | Azul: suavizado LOESS",
+       x = "Nota 2º Trimestre (G2)", y = "Nota Final (G3)") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Este gráfico es la prueba de que la nota del segundo trimestre (G2) es el mejor "espejo" de la nota final (G3).  
+
+- **Relación Directa**: La línea roja muestra que los puntos siguen un camino muy claro hacia arriba. Esto significa que, casi siempre, si un alumno saca buena nota en el segundo examen, la mantendrá al final.  
+
+- **Sin Sorpresas**: La línea azul (que sigue el flujo real de los datos) va pegada a la roja. Esto nos confirma que la relación es "limpia" y lineal; no hay cambios extraños de tendencia en las notas medias.  
+
+- **Los casos del "cero"**: Los puntos que ves abajo del todo (en el cero) son los únicos que rompen la regla. Son alumnos que iban bien encaminados pero que, por algún motivo personal o abandono, acabaron con un cero en la evaluación final.  
+
+**En resumen**: Usar G2 para predecir G3 es una apuesta segura porque el rendimiento del estudiante es muy estable durante el curso.
+
+## Ajuste del Modelo
+
+```{r slr-fit}
+# ── Modelo de Regresión Lineal Simple ─────────────────────────────────────
+slr_model <- lm(G3 ~ G2, data = train_data)
+summary(slr_model)
+```
+
+Los resultados del ajuste muestran que el modelo es altamente fiable. Con un R² del 83.7%, confirmamos que el rendimiento previo (G2) es el motor principal de la nota final, permitiendo predecir el resultado con un margen de error muy estrecho de apenas 1.4 puntos.
+
+## Diagnóstico de Residuos
+
+```{r slr-residuals, fig.height=8}
+# Gráficos de diagnóstico
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(slr_model,
+     which = 1:4,
+     col   = adjustcolor("#2c3e50", alpha.f = 0.5),
+     pch   = 16,
+     cex   = 0.8)
+par(mfrow = c(1, 1))
+```
+
+**Residuals vs Fitted (Linealidad):**
+
+- **Qué buscamos**: Que la línea roja sea lo más recta y horizontal posible alrededor del cero.  
+
+- **Lo que vemos**: La línea es bastante plana, lo que confirma que la relación entre la nota de G2 y la final es lineal y que el modelo ha capturado bien la tendencia general.  
+
+**Normal Q-Q (Normalidad de los errores):**
+
+- **Qué buscamos**: Que los puntos sigan la línea diagonal discontinua.  
+
+- **Lo que vemos**: En el centro los puntos se ajustan perfectamente, pero en el extremo izquierdo se caen drásticamente. Esto representa a los alumnos que sacaron un cero (outliers); el modelo no esperaba errores tan grandes en esa zona, por lo que la "normalidad" no es perfecta en los extremos.  
+
+**Scale-Location (Homocedasticidad):**
+
+- **Qué buscamos**: Que los puntos se repartan de forma aleatoria y uniforme, sin formar embudos.  
+
+- **Lo que vemos**: La dispersión es bastante constante a lo largo de las notas, lo que significa que el modelo es igual de preciso (o impreciso) tanto para alumnos de aprobado como de notable.  
+
+**Cook's distance (Puntos influyentes):**
+
+- **Qué buscamos**: Identificar si hay algún alumno específico que esté "empujando" demasiado la línea de regresión y falseando el resultado.  
+
+- **Lo que vemos**: Hay tres casos señalados (como el 520), pero sus valores están por debajo de los umbrales críticos (normalmente 0.5 o 1). Esto significa que, aunque son casos raros, no tienen fuerza suficiente para arruinar la validez de nuestro modelo.
+
+```{r slr-residuals-simple, fig.height=10, fig.width=8}
+# 1. Preparamos los datos básicos de los errores
+res_df <- data.frame(
+  Ajustados = fitted(slr_model),
+  Residuos  = residuals(slr_model)
+)
+
+# 2. Gráfico 1: ¿Es el error constante? (Residuos vs Ajustados)
+g1 <- ggplot(res_df, aes(x = Ajustados, y = Residuos)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(se = FALSE, color = "darkblue", size = 1) +
+  labs(title = "Comprobación de Linealidad",
+       subtitle = "Los puntos deben repartirse al azar sobre la línea roja",
+       x = "Predicción del modelo", y = "Error cometido") +
+  theme_minimal()
+
+# 3. Gráfico 2: ¿Siguen una campana de Gauss? (Histograma)
+g2 <- ggplot(res_df, aes(x = Residuos)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "gray90", color = "white") +
+  geom_density(color = "darkblue", size = 1) +
+  labs(title = "Distribución de los Errores",
+       subtitle = "Buscamos una forma de campana centrada en el cero",
+       x = "Valor del error", y = "Frecuencia") +
+  theme_minimal()
+
+# 4. Gráfico 3: El test de normalidad visual (Q-Q Plot)
+g3 <- ggplot(res_df, aes(sample = Residuos)) +
+  stat_qq(color = "steelblue", alpha = 0.5) +
+  stat_qq_line(color = "red") +
+  labs(title = "Test Visual de Normalidad (Q-Q)",
+       subtitle = "Los puntos deben seguir la línea diagonal",
+       x = "Teoría", y = "Realidad") +
+  theme_minimal()
+
+# 5. Los organizamos de forma que se vean GRANDES (uno debajo de otro o 2x1)
+grid.arrange(g1, g2, g3, ncol = 1, 
+             top = "Diagnóstico de Salud del Modelo")
+```
+
+Para validar nuestra regresión, analizamos los residuos (la diferencia entre la realidad y la predicción). El objetivo es confirmar que los errores son aleatorios y no esconden fallos de lógica.  
+
+- **Linealidad (Residuos vs Ajustados)**: Los puntos se reparten al azar y la línea azul es casi recta. Esto confirma que la relación G2-G3 es puramente lineal y el modelo no necesita cambios.  
+
+- **Distribución de Errores (Histograma)**: Los fallos se concentran en el cero siguiendo una forma de campana. Esto indica que el modelo es muy preciso en la mayoría de los casos.  
+
+- **Test de Normalidad (Q-Q Plot)**: Los puntos siguen la diagonal, lo que valida la fiabilidad estadística del modelo. Solo se desvían al principio por los alumnos que sacaron un cero inesperado, pero no afectan a la robustez general.  
+
+- **Conclusión**: El modelo es sano y fiable. Aunque existen valores atípicos (los "ceros"), los errores son predecibles y G2 se consolida como el motor principal del rendimiento final.
+
+## Análisis de Puntos Influyentes
+
+```{r slr-influence-simple, fig.height=6, fig.width=9}
+# 1. Preparamos los indicadores de influencia
+n_train <- nrow(train_data)
+cook_threshold <- 4 / n_train # Umbral estándar para detectar puntos influyentes
+
+influence_df <- data.frame(
+  ID = 1:n_train,
+  CookD = cooks.distance(slr_model),
+  Residuo_Estandarizado = rstandard(slr_model)
+) %>%
+  mutate(Es_Influyente = ifelse(CookD > cook_threshold, "Sí", "No"))
+
+# 2. Creamos un gráfico mucho más directo y visual
+ggplot(influence_df, aes(x = ID, y = CookD)) +
+  # Dibujamos las barras de influencia
+  geom_segment(aes(x = ID, xend = ID, y = 0, yend = CookD, color = Es_Influyente), alpha = 0.6) +
+  geom_point(aes(color = Es_Influyente, size = abs(Residuo_Estandarizado)), alpha = 0.8) +
+  # Línea de aviso
+  geom_hline(yintercept = cook_threshold, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("No" = "steelblue", "Sí" = "red")) +
+  labs(title = "Detección de Alumnos Atípicos (Distancia de Cook)",
+       subtitle = "Los puntos rojos superan el umbral de influencia y merecen revisión",
+       x = "Identificador del Alumno", y = "Nivel de Influencia (CookD)",
+       color = "¿Es Influyente?", size = "Tamaño del Error") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+En esta etapa, utilizamos la **Distancia de Cook** para verificar si algún estudiante tiene un peso excesivo en el cálculo de nuestra regresión. El objetivo es asegurar que la línea de tendencia represente al grupo general y no esté deformada por unos pocos casos aislados.  
+
+- **Interpretación del umbral**: La línea roja punteada marca el límite teórico de alerta (4/n). Los puntos destacados en rojo son alumnos cuyas notas finales se alejan significativamente de lo que predeciría su trayectoria en el segundo trimestre (G2).  
+
+- **Diagnóstico de los puntos rojos**: Aunque identificamos varios alumnos influyentes, observamos que sus valores de influencia son bajos en términos absolutos (todos por debajo de 0.11). En estadística, un punto suele considerarse "peligroso" para el modelo si se acerca a 0.5 o 1.  
+
+- **Conclusión**: Dado que ningún estudiante alcanza niveles de influencia críticos, confirmamos que el modelo es robusto y estable. No es necesario eliminar ninguna observación, ya que estos alumnos atípicos —probablemente casos de abandonos o exámenes excepcionalmente malos— no tienen la fuerza suficiente para alterar la validez de nuestras conclusiones generales.
+
+## Transformación de Variables
+
+```{r slr-transformation-simple}
+# 1. Comparamos el modelo lineal contra uno con curvatura (cuadrático)
+# Queremos ver si realmente merece la pena añadir complejidad
+modelo_lineal <- lm(G3 ~ G2, data = train_data)
+modelo_quad   <- lm(G3 ~ G2 + I(G2^2), data = train_data)
+
+# 2. Creamos una tabla comparativa muy directa
+comparativa <- data.frame(
+  Modelo = c("Lineal (Sencillo)", "Cuadrático (Complejo)"),
+  R2     = c(summary(modelo_lineal)$r.squared, summary(modelo_quad)$r.squared),
+  AIC    = c(AIC(modelo_lineal), AIC(modelo_quad)),
+  RMSE   = c(sqrt(mean(resid(modelo_lineal)^2)), sqrt(mean(resid(modelo_quad)^2)))
+)
+
+# Redondeamos para que sea legible
+comparativa[-1] <- round(comparativa[-1], 4)
+
+# Presentación limpia
+comparativa %>%
+  kable(caption = "Elección del Modelo: ¿Realmente necesitamos complejidad?") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+En este paso nos hemos detenido a pensar si una línea recta es suficiente para explicar las notas o si necesitamos una curva más compleja. Tras comparar el modelo **Lineal** con el **Cuadrático**, los datos nos dan una lección de humildad académica:
+
+-   **Ganancia mínima**: El modelo cuadrático apenas mejora el $R^2$ en un **0.01%**. Esto significa que añadir el cuadrado de la nota apenas aporta información nueva sobre el éxito del alumno.
+-   **Complejidad innecesaria**: Aunque el AIC es ligeramente menor en el modelo complejo, la diferencia es tan pequeña que no justifica usar un modelo más difícil de explicar. En estadística, si dos modelos rinden igual, el más sencillo suele ser el más robusto ante datos nuevos.
+-   **Confirmación visual**: Como vimos en los gráficos anteriores, los puntos se alinean de forma tan natural en una recta que forzar una curva no tiene sentido práctico.
+
+## Evaluación en Validación y Test
+
+```{r slr-evaluation}
+# Evaluación del modelo lineal simple (mejor según AIC)
+pred_val_slr  <- predict(slr_model, newdata = val_data)
+pred_test_slr <- predict(slr_model, newdata = test_data)
+
+metrics_slr <- data.frame(
+  Conjunto = c("Validación", "Test"),
+  RMSE     = c(sqrt(mean((val_data$G3  - pred_val_slr)^2)),
+               sqrt(mean((test_data$G3 - pred_test_slr)^2))),
+  MAE      = c(mean(abs(val_data$G3  - pred_val_slr)),
+               mean(abs(test_data$G3 - pred_test_slr))),
+  R2       = c(cor(val_data$G3,  pred_val_slr)^2,
+               cor(test_data$G3, pred_test_slr)^2)
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+metrics_slr |>
+  kable(caption = "Métricas del modelo de regresión lineal simple") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Gráfico predicciones vs reales (test)
+ggplot(data.frame(Real = test_data$G3, Pred = pred_test_slr),
+       aes(x = Real, y = Pred)) +
+  geom_point(alpha = 0.6, color = "#2c3e50", size = 2) +
+  geom_abline(slope = 1, intercept = 0, color = "#e74c3c",
+              linewidth = 1.2, linetype = "dashed") +
+  geom_smooth(method = "lm", color = "#3498db", se = FALSE) +
+  labs(title = "Predicciones vs Valores Reales — Test (Regresión Simple)",
+       subtitle = "Línea roja: predicción perfecta",
+       x = "Valores reales (G3)", y = "Valores predichos") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+La evaluación visual en el conjunto de test confirma la potencia de la regresión simple basada en G2. Los puntos abrazan la línea de predicción perfecta, lo que nos da la seguridad de que el modelo es robusto y está listo para ser utilizado con una fiabilidad muy alta. La simplicidad de este modelo es su mayor fortaleza, ya que ofrece una interpretación directa y una precisión excelente sin necesidad de complicaciones adicionales.
