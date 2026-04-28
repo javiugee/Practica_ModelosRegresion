@@ -1,0 +1,1768 @@
+---
+title: "Práctica: Modelos de Regresión para Predicción de Notas Finales"
+subtitle: "Grado en Ciencia e Ingeniería de Datos - URJC"
+author:
+  - name: "Javier Ugena García"
+  - name: "Soraya Burgos Modrego"
+  - name: "Elba Jares Darriba"
+  - name: 'GRUPO 5'
+date: today
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-title: "Índice de Contenidos"
+    toc-float: true
+    number-sections: true
+    theme: cosmo
+    highlight-style: github
+    code-fold: false
+    code-tools: false
+    fig-width: 9
+    fig-height: 6
+    fig-align: center
+    embed-resources: true
+    df-print: kable
+    css: styles.css
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+editor: visual
+---
+
+------------------------------------------------------------------------
+
+# Introducción y Descripción del Problema
+
+## Contexto del Estudio
+
+Este informe analiza el **rendimiento académico de estudiantes de secundaria** en Portugal, utilizando el conocido dataset *Student Performance* disponible en el [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/320/student+performance). El dataset fue recopilado por Cortez y Silva (2008) mediante cuestionarios escolares y registros académicos en dos escuelas portuguesas: **Gabriel Pereira (GP)** y **Mousinho da Silveira (MS)**.
+
+El objetivo principal de esta práctica es construir y evaluar modelos de regresión que permitan **predecir la nota final (G3)** de los estudiantes en la asignatura de **Portugués**, a partir de una amplia variedad de variables sociodemográficas, familiares y académicas.
+
+## Dataset Utilizado
+
+Se trabaja con el fichero `student-por.csv`, correspondiente a la asignatura de **Lengua Portuguesa**, que contiene **649 observaciones** y **33 variables**. Se ha elegido este dataset por su mayor tamaño muestral respecto al de Matemáticas (395 obs.), lo que proporciona mayor robustez estadística para la modelización.
+
+::: callout-note
+**Variables objetivo:**
+
+-   **G3** (variable continua): Nota final del curso, de 0 a 20 → usada en regresión lineal.
+-   **G3_bin** (variable binaria): Aprobado (G3 ≥ 10) / Suspendido (G3 \< 10) → usada en regresión logística.
+:::
+
+## Estructura del Informe
+
+El análisis sigue la siguiente estructura:
+
+1.  Preparación de datos y análisis exploratorio (EDA)
+2.  Regresión lineal simple
+3.  Regresión lineal múltiple (selección de variables, regularización, no linealidades)
+4.  Regresión logística (target binarizado)
+5.  Comparación y evaluación de modelos
+6.  Conclusiones y trabajo futuro
+
+------------------------------------------------------------------------
+
+# Preparación de Datos y Análisis Exploratorio
+
+## Carga de Librerías y Datos
+
+```{r setup-libraries}
+# ── Librerías de manipulación y visualización ──────────────────────────────
+library(tidyverse)       # manipulación y visualización general
+library(ggplot2)         # gráficos
+library(GGally)          # pairs plots
+library(corrplot)        # correlogramas
+library(knitr)           # tablas
+library(kableExtra)      # tablas mejoradas
+
+# ── Librerías de modelado ──────────────────────────────────────────────────
+library(caret)           # partición, entrenamiento y validación
+library(glmnet)          # regularización Lasso/Ridge/ElasticNet
+library(leaps)           # selección de subconjuntos
+library(MASS)            # stepwise AIC/BIC
+library(car)             # VIF, diagnóstico
+library(lmtest)          # tests de hipótesis sobre residuos
+library(nortest)         # test de normalidad Anderson-Darling
+
+# ── Librerías de evaluación y diagnóstico ─────────────────────────────────
+library(pROC)            # curvas ROC
+library(ResourceSelection) # Hosmer-Lemeshow
+library(gridExtra)       # grid de gráficos
+library(ggfortify)       # autoplot para lm
+library(broom)           # tidy model outputs
+library(performance)     # check_model
+library(see)             # visualización performance
+
+# Semilla para reproducibilidad
+set.seed(42)
+```
+
+```{r load-data}
+# ── Carga del dataset de Portugués ────────────────────────────────────────
+student_por <- read.table("student-por.csv", sep = ";", header = TRUE,
+                          stringsAsFactors = TRUE)
+
+cat("Dimensiones del dataset:", dim(student_por), "\n")
+cat("Variables:", ncol(student_por), "\n")
+cat("Observaciones:", nrow(student_por), "\n")
+```
+
+## Inspección Inicial
+
+```{r initial-inspection}
+# Vista general de la estructura
+str(student_por)
+```
+
+## Valores Ausentes y Calidad de los Datos
+
+```{r missing-values}
+# Comprobamos si hay valores nulos en el dataset
+colSums(is.na(student_por))
+```
+
+El dataset no presenta valores ausentes, lo que facilita el análisis y modelado posterior. Sin embargo, se deben revisar posibles valores atípicos o inconsistencias en las variables numéricas y categóricas durante el EDA.
+
+## Ingeniería de Variables
+
+```{r feature-engineering}
+# ── Preprocesamiento ───────────────────────────────────────────────────────
+student <- student_por |>
+  mutate(
+    # Variable objetivo binarizada para regresión logística
+    G3_bin = factor(ifelse(G3 >= 10, "Aprobado", "Suspendido"),
+                    levels = c("Suspendido", "Aprobado")),
+
+    # Promedio de notas parciales
+    G_avg  = (G1 + G2) / 2,
+
+    # Consumo total de alcohol (laboral + fin de semana)
+    Alc_total = Dalc + Walc,
+
+    # Educación media de los padres
+    ParentEdu = (Medu + Fedu) / 2,
+
+    # Recodificación de variables ordinales como numéricas (ya lo son)
+    # Aseguramos que las binarias sean factores
+    across(c(school, sex, address, famsize, Pstatus,
+             schoolsup, famsup, paid, activities, nursery,
+             higher, internet, romantic), as.factor),
+
+    # Variables ordinales como ordered factors para análisis
+    studytime_f = factor(studytime, levels = 1:4,
+                         labels = c("<2h","2-5h","5-10h",">10h"), ordered = TRUE),
+    traveltime_f = factor(traveltime, levels = 1:4,
+                          labels = c("<15min","15-30min","30-60min",">1h"), ordered = TRUE)
+  )
+
+cat("Dataset procesado:\n")
+cat(" - Observaciones:", nrow(student), "\n")
+cat(" - Variables totales:", ncol(student), "\n")
+cat("\nDistribución de G3_bin:\n")
+print(table(student$G3_bin))
+cat("\nTasa de aprobados:", round(mean(student$G3 >= 10) * 100, 1), "%\n")
+```
+
+## Partición Train / Validation / Test (60/20/20)
+
+```{r}
+# ── Partición estratificada de los datos (60/20/20) ──────────────────────────
+# Dividimos el dataset para asegurar que el modelo aprenda con unos datos,
+# se ajuste con otros y finalmente se pruebe con datos que nunca ha visto.
+
+n <- nrow(student)
+
+# 1. Separamos el 20% para el test final (evaluación definitiva)
+idx_test  <- createDataPartition(student$G3, p = 0.20, list = FALSE)
+test_data <- student[idx_test, ]
+tv_data   <- student[-idx_test, ]
+
+# 2. Del 80% restante, reservamos un 25% para validación (que es el 20% del total)
+# y el resto para el entrenamiento (60% del total)
+idx_val    <- createDataPartition(tv_data$G3, p = 0.25, list = FALSE)
+val_data   <- tv_data[idx_val, ]
+train_data <- tv_data[-idx_val, ]
+
+# Resumen sencillo de la división de la muestra
+cat("Resumen de las particiones:\n")
+cat(paste("- Entrenamiento (60%):", nrow(train_data), "estudiantes\n"))
+cat(paste("- Validación    (20%):", nrow(val_data), "estudiantes\n"))
+cat(paste("- Test          (20%):", nrow(test_data), "estudiantes\n"))
+cat(paste("Total de la muestra:", n, "observaciones\n"))
+
+# Comprobamos que las notas medias son parecidas en los tres grupos
+# Esto nos confirma que la división ha sido equilibrada (estratificada)
+cat("\nConsistencia de la variable objetivo (Media de G3):\n")
+cat(sprintf("  Entrenamiento: %.2f | Validación: %.2f | Test: %.2f\n",
+            mean(train_data$G3), mean(val_data$G3), mean(test_data$G3)))
+```
+
+## Análisis Exploratorio de Datos (EDA)
+
+### Variable Objetivo: G3
+
+```{r eda-target}
+p1 <- ggplot(student, aes(x = G3)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 21,
+                 fill = "#2c3e50", color = "white", alpha = 0.85) +
+  geom_density(color = "#e74c3c", linewidth = 1.2) +
+  geom_vline(xintercept = mean(student$G3), linetype = "dashed",
+             color = "#3498db", linewidth = 1) +
+  geom_vline(xintercept = median(student$G3), linetype = "dotted",
+             color = "#2ecc71", linewidth = 1) +
+  annotate("text", x = mean(student$G3) + 0.5, y = 0.13,
+           label = paste0("Media: ", round(mean(student$G3), 1)),
+           color = "#3498db", hjust = 0, size = 3.5) +
+  annotate("text", x = median(student$G3) - 0.5, y = 0.11,
+           label = paste0("Mediana: ", median(student$G3)),
+           color = "#2ecc71", hjust = 1, size = 3.5) +
+  labs(title = "Distribución de la Nota Final (G3)",
+       x = "Nota Final (G3)", y = "Densidad") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p2 <- ggplot(student, aes(x = G3_bin, fill = G3_bin)) +
+  geom_bar(alpha = 0.85, color = "white") +
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = -0.5, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("Suspendido" = "#e74c3c", "Aprobado" = "#2ecc71")) +
+  labs(title = "Distribución Aprobados/Suspendidos",
+       x = "", y = "Número de estudiantes", fill = "") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "none")
+
+p3 <- ggplot(student, aes(sample = G3)) +
+  stat_qq(color = "#2c3e50", alpha = 0.6) +
+  stat_qq_line(color = "#e74c3c", linewidth = 1) +
+  labs(title = "Q-Q Plot de G3",
+       x = "Cuantiles teóricos", y = "Cuantiles observados") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p4 <- ggplot(student, aes(x = "", y = G3)) +
+  geom_boxplot(fill = "#3498db", alpha = 0.7, outlier.color = "#e74c3c",
+               outlier.size = 2) +
+  geom_jitter(width = 0.1, alpha = 0.2, color = "#2c3e50") +
+  labs(title = "Boxplot de G3", x = "", y = "Nota Final") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+**1. ¿Cómo se reparten las notas? (Histograma y Gráfico de Barras)**
+
+Al observar el **histograma de densidad**, vemos que la mayoría de los alumnos se agrupan en el centro, con una **media de 11.9** y una **mediana de 12**. Esto nos indica que el rendimiento es bastante consistente. La mayoría de los estudiantes aprueba con notas modestas (entre 10 y 14).
+
+**2. La salud de nuestros datos (Q-Q Plot y Boxplot)**
+
+Para saber si nuestros modelos de regresión serán fiables, debemos mirar la "forma" de estos datos:
+
+-   **Q-Q Plot de G3**: Este gráfico nos dice si las notas siguen una distribución normal (la línea roja ideal). Vemos que los puntos siguen muy bien la línea en la parte central, pero se desvían en los extremos. Especialmente en la parte baja, observamos un grupo de puntos que "caen" a cero; estos son alumnos con un rendimiento muy por debajo de lo esperado que podrían ser casos especiales para el modelo.
+
+-   **Boxplot de G3**: El "cajón" azul representa dónde está el 50% central de los alumnos. Es una caja compacta, lo que refuerza la idea de que no hay una dispersión salvaje de notas. Sin embargo, los puntos aislados en la parte inferior (cerca del 0) confirman la existencia de outliers o valores atípicos: alumnos que, por razones que deberemos investigar, sacaron una nota nula.
+
+**Conclusión**: Los datos nos muestran un escenario optimista donde la mayoría aprueba, pero también nos alertan de que existe un pequeño grupo de alumnos en riesgo (notas cercanas a 0) que el modelo de regresión simple podría tener dificultades para predecir con exactitud si no añadimos más información.
+
+### Variables Numéricas: Distribuciones y Correlaciones
+
+```{r eda-numeric}
+# Variables numéricas continuas/ordinales relevantes
+num_vars <- c("age", "Medu", "Fedu", "traveltime", "studytime", "failures",
+              "famrel", "freetime", "goout", "Dalc", "Walc", "health",
+              "absences", "G1", "G2", "G3")
+
+num_data <- student[, num_vars]
+
+# Correlograma
+cor_matrix <- cor(num_data, use = "complete.obs")
+
+corrplot(cor_matrix,
+         method = "color",
+         type   = "upper",
+         order  = "hclust",
+         tl.cex = 0.8,
+         tl.col = "black",
+         addCoef.col = "black",
+         number.cex  = 0.65,
+         col = colorRampPalette(c("#e74c3c", "white", "#2c3e50"))(200),
+         title = "Matriz de Correlaciones — Variables Numéricas",
+         mar   = c(0, 0, 1.5, 0))
+```
+
+```{r eda-correlations-table}
+# Top correlaciones con G3
+cor_g3 <- data.frame(
+  Variable    = rownames(cor_matrix),
+  Correlacion = cor_matrix[, "G3"]
+) |>
+  filter(Variable != "G3") |>
+  arrange(desc(abs(Correlacion))) |>
+  mutate(
+    Correlacion = round(Correlacion, 3),
+    Magnitud    = case_when(
+      abs(Correlacion) >= 0.5 ~ "Alta",
+      abs(Correlacion) >= 0.3 ~ "Moderada",
+      abs(Correlacion) >= 0.1 ~ "Baja",
+      TRUE                    ~ "Muy baja"
+    )
+  )
+
+# Mostramos la tabla
+cor_g3 |>
+  kable(caption = "Correlaciones de las variables numéricas con G3",
+        col.names = c("Variable", "Correlación con G3", "Magnitud"),
+        row.names = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which(abs(cor_g3$Correlacion) >= 0.5), background = "#d5f5e3") |>
+  row_spec(which(abs(cor_g3$Correlacion) >= 0.3 & abs(cor_g3$Correlacion) < 0.5),
+           background = "#fef9e7")
+```
+
+Esta matriz de correlaciones de variables numéricas podemos separarla en 3 grupos:
+
+-   **Correlaciones muy altas**: G1 (r ≈ 0.83) y G2 (r ≈ 0.92) son los mejores predictores individuales de la nota final, lo que sugiere que el rendimiento a lo largo del curso es muy consistente.
+-   **Correlaciones moderadas**: Variables como studytime, Medu y Fedu muestran correlaciones moderadas con G3, lo que indica que el tiempo de estudio, la educación de los padres y las ausencias también influyen en el rendimiento final.
+-   **Correlaciones bajas o negativas**: Variables como failures presentan correlaciones negativas leves, lo que sugiere que el número de suspensos previos, el consumo de alcohol y la vida social pueden tener un impacto negativo en las notas finales.
+
+**Conclusión** :Las notas parciales (G1 y G2) son los mejores indicadores de la nota final (G3), pero también hay otros factores académicos y personales que influyen en el rendimiento, aunque en menor medida. Esto nos da una buena base para construir modelos de regresión que incluyan estas variables clave.
+
+### Variables Categóricas vs G3
+
+```{r eda-categorical-simple, fig.height=12, fig.width=10}
+# 1. Creamos un estilo común para todos los gráficos de cajas (boxplots)
+# Esto hará que los gráficos sean más limpios y el texto no se amontone
+mi_estilo <- theme_minimal(base_size = 12) + 
+             theme(plot.title = element_text(face = "bold", hjust = 0.5),
+                   axis.text.x = element_text(angle = 0))
+
+# 2. Creamos los gráficos
+# Usamos 'fill' para que cada caja tenga color y sea más visual
+p1 <- ggplot(student, aes(x = school, y = G3, fill = school)) + geom_boxplot() + labs(title="Colegio") + mi_estilo
+p2 <- ggplot(student, aes(x = sex, y = G3, fill = sex)) + geom_boxplot() + labs(title="Género") + mi_estilo
+p3 <- ggplot(student, aes(x = address, y = G3, fill = address)) + geom_boxplot() + labs(title="Zona (U/R)") + mi_estilo
+p4 <- ggplot(student, aes(x = famsize, y = G3, fill = famsize)) + geom_boxplot() + labs(title="Tamaño Familia") + mi_estilo
+p5 <- ggplot(student, aes(x = Pstatus, y = G3, fill = Pstatus)) + geom_boxplot() + labs(title="Estado Padres") + mi_estilo
+p6 <- ggplot(student, aes(x = guardian, y = G3, fill = guardian)) + geom_boxplot() + labs(title="Tutor Legal") + mi_estilo
+p7 <- ggplot(student, aes(x = Mjob, y = G3, fill = Mjob)) + geom_boxplot() + labs(title="Trabajo Madre") + mi_estilo
+p8 <- ggplot(student, aes(x = Fjob, y = G3, fill = Fjob)) + geom_boxplot() + labs(title="Trabajo Padre") + mi_estilo
+
+# 3. Los organizamos en 2 columnas para que sean grandes y legibles
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, 
+             ncol = 2, 
+             top = "Análisis de Factores Sociales en el Rendimiento")
+```
+
+Al observar los gráficos más detallados, podemos extraer conclusiones valiosas:
+
+-   **Estabilidad frente a la estructura familiar**: Resulta sorprendente ver que variables como el tamaño de la familia (famsize) o si los padres viven juntos o separados (Pstatus) apenas desplazan la mediana de las notas. Esto sugiere que, en esta muestra, la estructura del hogar no es un factor determinante para el éxito académico.
+
+-   **El sesgo del género y el centro**: Confirmamos visualmente que en la asignatura de Portugués, las mujeres mantienen una consistencia mayor en sus notas, mientras que en el colegio Gabriel Pereira (GP) se alcanzan picos de rendimiento más altos que en el Mousinho da Silveira (MS).
+
+-   **Influencia profesional**: El impacto más claro proviene del trabajo de los padres. Los hijos de profesionales de la salud o la enseñanza no solo tienen medianas más altas, sino que presentan menos casos de notas extremadamente bajas. Esto refuerza la idea de que el capital cultural y el acompañamiento educativo en casa son motores del rendimiento.
+
+-   **Tutoría legal**: Cuando el tutor es alguien distinto al padre o la madre (other), la variabilidad aumenta y la mediana tiende a bajar ligeramente, lo que podría indicar situaciones de mayor vulnerabilidad académica.
+
+-   **Conclusión del análisis**: Este análisis exploratorio nos indica que, aunque el entorno familiar "clásico" no parece penalizar al alumno, factores como la formación de los padres y la elección del centro sí marcan una diferencia. Estos hallazgos nos servirán de base para decidir qué variables incluir en nuestro futuro modelo de regresión múltiple.
+
+```{r eda-key-relationships, fig.height=8, fig.width=10}
+# 1. El factor académico: G2 vs G3 (La relación más fuerte)
+p_acad <- ggplot(student, aes(x = G2, y = G3)) +
+  geom_jitter(alpha = 0.3, color = "#2c3e50") + # jitter para ver puntos solapados
+  geom_smooth(method = "lm", color = "#e74c3c", se = FALSE) +
+  labs(title = "Inercia Académica", subtitle = "G2 vs G3", x = "Nota 2º Periodo", y = "Nota Final") +
+  theme_minimal()
+
+# 2. El factor esfuerzo: Study Time vs G3
+p_study <- ggplot(student, aes(x = as.factor(studytime), y = G3, fill = as.factor(studytime))) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  scale_fill_brewer(palette = "Blues") +
+  labs(title = "Impacto del Estudio", subtitle = "Horas semanales", x = "Categoría de tiempo", y = "Nota Final") +
+  theme_minimal()
+
+# 3. El factor riesgo: Failures vs G3
+p_fail <- ggplot(student, aes(x = as.factor(failures), y = G3, fill = as.factor(failures))) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("#2ecc71", "#f1c40f", "#e67e22", "#e74c3c")) +
+  labs(title = "El Lastre del Fracaso", subtitle = "Suspensos previos", x = "Nº de suspensos", y = "Nota Final") +
+  theme_minimal()
+
+# 4. El factor social: Absences vs G3
+p_abs <- ggplot(student, aes(x = absences, y = G3)) +
+  geom_point(alpha = 0.4, color = "#3498db") +
+  geom_smooth(method = "loess", color = "#2c3e50", se = FALSE) +
+  labs(title = "Efecto del Absentismo", subtitle = "Faltas a clase", x = "Nº de ausencias", y = "Nota Final") +
+  theme_minimal()
+
+# Organizamos los 4 gráficos en un panel 2x2
+grid.arrange(p_acad, p_study, p_fail, p_abs, ncol = 2)
+```
+
+Tras el análisis exploratorio general, profundizamos en las cuatro dinámicas que parecen dictar la nota final del estudiante. Este panel nos permite contrastar el peso del rendimiento previo frente a los hábitos y el historial del alumno.
+
+**1. Inercia Académica (G2 vs G3)**
+
+Es, sin duda, la relación más potente de todo el estudio.
+
+-   **Observación**: Los puntos se alinean casi perfectamente con la línea roja de regresión.
+
+-   **Conclusión**: Existe una continuidad casi absoluta; es muy difícil romper la trayectoria académica en el último trimestre. Sin embargo, hay un pequeño grupo de puntos en el eje horizontal (nota final 0) que representan alumnos que, teniendo notas medias en G2, "desaparecieron" o fracasaron totalmente al final.
+
+**2. El Impacto del Estudio (Horas semanales)**
+
+Aquí analizamos si el esfuerzo se traduce en resultados.
+
+-   **Observación**: A medida que subimos de categoría de tiempo de estudio (del 1 al 4), tanto la mediana como el límite inferior de la caja suben.
+
+-   **Conclusión**: Estudiar más no garantiza un 20, pero sí "eleva el suelo" del rendimiento. Los alumnos que estudian poco (categoría 1) tienen una dispersión mucho mayor y más riesgo de suspender que los de la categoría 4, donde la mayoría se estabiliza por encima del 12.
+
+**3. El Lastre del Fracaso (Suspensos previos)**
+
+Este gráfico revela el peso psicológico y académico de los antecedentes.
+
+-   **Observación**: Hay un salto dramático entre tener 0 suspensos y tener 1. La mediana cae de un 12 a un 9 aproximadamente.
+
+-   **Conclusión**: El primer suspenso previo es el que más penaliza. Curiosamente, la diferencia entre tener 1, 2 o 3 suspensos no es tan grande; lo que realmente marca la diferencia entre el éxito y el riesgo es mantener el historial limpio de "failures".
+
+4.  Efecto del Absentismo (Faltas a clase)
+
+A diferencia de los anteriores, este gráfico de dispersión con línea suavizada muestra un patrón más complejo.
+
+-   **Observación**: La línea se mantiene relativamente plana hasta las 10-15 ausencias. A partir de ahí, la variabilidad aumenta.
+
+-   **Conclusión**: El sistema parece tolerar un nivel bajo de absentismo sin que la nota se resienta drásticamente. No obstante, las faltas excesivas suelen estar ligadas a perfiles muy específicos que o bien fracasan estrepitosamente o bien son casos excepcionales que logran aprobar pese a no asistir.
+
+**Hallazgos clave del EDA:**
+
+-   **G1 y G2** tienen una correlación muy alta con G3, lo que indica una gran consistencia en el rendimiento a lo largo del curso.
+-   **failures** (número de suspensos previos) presenta correlación negativa importante.
+-   **higher** (deseo de estudiar educación superior) está fuertemente asociado con mejores notas finales.
+-   Variables como **studytime**, **Medu** y **Fedu** muestran correlaciones moderadas positivas.
+-   El alcohol (**Dalc**, **Walc**) y **goout** presentan correlaciones negativas leves.
+
+------------------------------------------------------------------------
+
+# Regresión Lineal Simple
+
+## Selección del Predictor
+
+Se elige **G2** (nota del segundo trimestre) como predictor simple por ser la variable más correlacionada con G3 y por su evidente interpretación causal: el rendimiento acumulado predice el resultado final.
+
+```{r slr-scatter}
+ggplot(train_data, aes(x = G2, y = G3)) +
+  geom_point(alpha = 0.4, color = "#2c3e50", size = 2) +
+  geom_smooth(method = "lm", color = "#e74c3c", linewidth = 1.2, se = TRUE,
+              fill = "#e74c3c", alpha = 0.15) +
+  geom_smooth(method = "loess", color = "#3498db", linewidth = 1, linetype = "dashed",
+              se = FALSE) +
+  labs(title = "Relación G2 (2º Trimestre) vs G3 (Nota Final)",
+       subtitle = "Rojo: regresión lineal | Azul: suavizado LOESS",
+       x = "Nota 2º Trimestre (G2)", y = "Nota Final (G3)") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Este gráfico es la prueba de que la nota del segundo trimestre (G2) es el mejor "espejo" de la nota final (G3).
+
+-   **Relación Directa**: La línea roja muestra que los puntos siguen un camino muy claro hacia arriba. Esto significa que, casi siempre, si un alumno saca buena nota en el segundo examen, la mantendrá al final.
+
+-   **Sin Sorpresas**: La línea azul (que sigue el flujo real de los datos) va pegada a la roja. Esto nos confirma que la relación es "limpia" y lineal; no hay cambios extraños de tendencia en las notas medias.
+
+-   **Los casos del "cero"**: Los puntos que ves abajo del todo (en el cero) son los únicos que rompen la regla. Son alumnos que iban bien encaminados pero que, por algún motivo personal o abandono, acabaron con un cero en la evaluación final.
+
+**En resumen**: Usar G2 para predecir G3 es una apuesta segura porque el rendimiento del estudiante es muy estable durante el curso.
+
+## Ajuste del Modelo
+
+```{r slr-fit}
+# ── Modelo de Regresión Lineal Simple ─────────────────────────────────────
+slr_model <- lm(G3 ~ G2, data = train_data)
+summary(slr_model)
+```
+
+Los resultados del ajuste muestran que el modelo es altamente fiable. Con un R² del 83.7%, confirmamos que el rendimiento previo (G2) es el motor principal de la nota final, permitiendo predecir el resultado con un margen de error muy estrecho de apenas 1.4 puntos.
+
+## Diagnóstico de Residuos
+
+```{r slr-residuals, fig.height=8}
+# Gráficos de diagnóstico
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(slr_model,
+     which = 1:4,
+     col   = adjustcolor("#2c3e50", alpha.f = 0.5),
+     pch   = 16,
+     cex   = 0.8)
+par(mfrow = c(1, 1))
+```
+
+**Residuals vs Fitted (Linealidad):**
+
+-   **Qué buscamos**: Que la línea roja sea lo más recta y horizontal posible alrededor del cero.
+
+-   **Lo que vemos**: La línea es bastante plana, lo que confirma que la relación entre la nota de G2 y la final es lineal y que el modelo ha capturado bien la tendencia general.
+
+**Normal Q-Q (Normalidad de los errores):**
+
+-   **Qué buscamos**: Que los puntos sigan la línea diagonal discontinua.
+
+-   **Lo que vemos**: En el centro los puntos se ajustan perfectamente, pero en el extremo izquierdo se caen drásticamente. Esto representa a los alumnos que sacaron un cero (outliers); el modelo no esperaba errores tan grandes en esa zona, por lo que la "normalidad" no es perfecta en los extremos.
+
+**Scale-Location (Homocedasticidad):**
+
+-   **Qué buscamos**: Que los puntos se repartan de forma aleatoria y uniforme, sin formar embudos.
+
+-   **Lo que vemos**: La dispersión es bastante constante a lo largo de las notas, lo que significa que el modelo es igual de preciso (o impreciso) tanto para alumnos de aprobado como de notable.
+
+**Cook's distance (Puntos influyentes):**
+
+-   **Qué buscamos**: Identificar si hay algún alumno específico que esté "empujando" demasiado la línea de regresión y falseando el resultado.
+
+-   **Lo que vemos**: Hay tres casos señalados (como el 520), pero sus valores están por debajo de los umbrales críticos (normalmente 0.5 o 1). Esto significa que, aunque son casos raros, no tienen fuerza suficiente para arruinar la validez de nuestro modelo.
+
+```{r slr-residuals-simple, fig.height=10, fig.width=8}
+# 1. Preparamos los datos básicos de los errores
+res_df <- data.frame(
+  Ajustados = fitted(slr_model),
+  Residuos  = residuals(slr_model)
+)
+
+# 2. Gráfico 1: ¿Es el error constante? (Residuos vs Ajustados)
+g1 <- ggplot(res_df, aes(x = Ajustados, y = Residuos)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(se = FALSE, color = "darkblue", size = 1) +
+  labs(title = "Comprobación de Linealidad",
+       subtitle = "Los puntos deben repartirse al azar sobre la línea roja",
+       x = "Predicción del modelo", y = "Error cometido") +
+  theme_minimal()
+
+# 3. Gráfico 2: ¿Siguen una campana de Gauss? (Histograma)
+g2 <- ggplot(res_df, aes(x = Residuos)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "gray90", color = "white") +
+  geom_density(color = "darkblue", size = 1) +
+  labs(title = "Distribución de los Errores",
+       subtitle = "Buscamos una forma de campana centrada en el cero",
+       x = "Valor del error", y = "Frecuencia") +
+  theme_minimal()
+
+# 4. Gráfico 3: El test de normalidad visual (Q-Q Plot)
+g3 <- ggplot(res_df, aes(sample = Residuos)) +
+  stat_qq(color = "steelblue", alpha = 0.5) +
+  stat_qq_line(color = "red") +
+  labs(title = "Test Visual de Normalidad (Q-Q)",
+       subtitle = "Los puntos deben seguir la línea diagonal",
+       x = "Teoría", y = "Realidad") +
+  theme_minimal()
+
+# 5. Los organizamos de forma que se vean GRANDES (uno debajo de otro o 2x1)
+grid.arrange(g1, g2, g3, ncol = 1, 
+             top = "Diagnóstico de Salud del Modelo")
+```
+
+Para validar nuestra regresión, analizamos los residuos (la diferencia entre la realidad y la predicción). El objetivo es confirmar que los errores son aleatorios y no esconden fallos de lógica.
+
+-   **Linealidad (Residuos vs Ajustados)**: Los puntos se reparten al azar y la línea azul es casi recta. Esto confirma que la relación G2-G3 es puramente lineal y el modelo no necesita cambios.
+
+-   **Distribución de Errores (Histograma)**: Los fallos se concentran en el cero siguiendo una forma de campana. Esto indica que el modelo es muy preciso en la mayoría de los casos.
+
+-   **Test de Normalidad (Q-Q Plot)**: Los puntos siguen la diagonal, lo que valida la fiabilidad estadística del modelo. Solo se desvían al principio por los alumnos que sacaron un cero inesperado, pero no afectan a la robustez general.
+
+-   **Conclusión**: El modelo es sano y fiable. Aunque existen valores atípicos (los "ceros"), los errores son predecibles y G2 se consolida como el motor principal del rendimiento final.
+
+## Análisis de Puntos Influyentes
+
+```{r slr-influence-simple, fig.height=6, fig.width=9}
+# 1. Preparamos los indicadores de influencia
+n_train <- nrow(train_data)
+cook_threshold <- 4 / n_train # Umbral estándar para detectar puntos influyentes
+
+influence_df <- data.frame(
+  ID = 1:n_train,
+  CookD = cooks.distance(slr_model),
+  Residuo_Estandarizado = rstandard(slr_model)
+) %>%
+  mutate(Es_Influyente = ifelse(CookD > cook_threshold, "Sí", "No"))
+
+# 2. Creamos un gráfico mucho más directo y visual
+ggplot(influence_df, aes(x = ID, y = CookD)) +
+  # Dibujamos las barras de influencia
+  geom_segment(aes(x = ID, xend = ID, y = 0, yend = CookD, color = Es_Influyente), alpha = 0.6) +
+  geom_point(aes(color = Es_Influyente, size = abs(Residuo_Estandarizado)), alpha = 0.8) +
+  # Línea de aviso
+  geom_hline(yintercept = cook_threshold, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("No" = "steelblue", "Sí" = "red")) +
+  labs(title = "Detección de Alumnos Atípicos (Distancia de Cook)",
+       subtitle = "Los puntos rojos superan el umbral de influencia y merecen revisión",
+       x = "Identificador del Alumno", y = "Nivel de Influencia (CookD)",
+       color = "¿Es Influyente?", size = "Tamaño del Error") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+En esta etapa, utilizamos la **Distancia de Cook** para verificar si algún estudiante tiene un peso excesivo en el cálculo de nuestra regresión. El objetivo es asegurar que la línea de tendencia represente al grupo general y no esté deformada por unos pocos casos aislados.
+
+-   **Interpretación del umbral**: La línea roja punteada marca el límite teórico de alerta (4/n). Los puntos destacados en rojo son alumnos cuyas notas finales se alejan significativamente de lo que predeciría su trayectoria en el segundo trimestre (G2).
+
+-   **Diagnóstico de los puntos rojos**: Aunque identificamos varios alumnos influyentes, observamos que sus valores de influencia son bajos en términos absolutos (todos por debajo de 0.11). En estadística, un punto suele considerarse "peligroso" para el modelo si se acerca a 0.5 o 1.
+
+-   **Conclusión**: Dado que ningún estudiante alcanza niveles de influencia críticos, confirmamos que el modelo es robusto y estable. No es necesario eliminar ninguna observación, ya que estos alumnos atípicos —probablemente casos de abandonos o exámenes excepcionalmente malos— no tienen la fuerza suficiente para alterar la validez de nuestras conclusiones generales.
+
+## Transformación de Variables
+
+```{r slr-transformation-simple}
+# 1. Comparamos el modelo lineal contra uno con curvatura (cuadrático)
+# Queremos ver si realmente merece la pena añadir complejidad
+modelo_lineal <- lm(G3 ~ G2, data = train_data)
+modelo_quad   <- lm(G3 ~ G2 + I(G2^2), data = train_data)
+
+# 2. Creamos una tabla comparativa muy directa
+comparativa <- data.frame(
+  Modelo = c("Lineal (Sencillo)", "Cuadrático (Complejo)"),
+  R2     = c(summary(modelo_lineal)$r.squared, summary(modelo_quad)$r.squared),
+  AIC    = c(AIC(modelo_lineal), AIC(modelo_quad)),
+  RMSE   = c(sqrt(mean(resid(modelo_lineal)^2)), sqrt(mean(resid(modelo_quad)^2)))
+)
+
+# Redondeamos para que sea legible
+comparativa[-1] <- round(comparativa[-1], 4)
+
+# Presentación limpia
+comparativa %>%
+  kable(caption = "Elección del Modelo: ¿Realmente necesitamos complejidad?") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+En este paso nos hemos detenido a pensar si una línea recta es suficiente para explicar las notas o si necesitamos una curva más compleja. Tras comparar el modelo **Lineal** con el **Cuadrático**, los datos nos dan una lección de humildad académica:
+
+-   **Ganancia mínima**: El modelo cuadrático apenas mejora el $R^2$ en un **0.01%**. Esto significa que añadir el cuadrado de la nota apenas aporta información nueva sobre el éxito del alumno.
+-   **Complejidad innecesaria**: Aunque el AIC es ligeramente menor en el modelo complejo, la diferencia es tan pequeña que no justifica usar un modelo más difícil de explicar. En estadística, si dos modelos rinden igual, el más sencillo suele ser el más robusto ante datos nuevos.
+-   **Confirmación visual**: Como vimos en los gráficos anteriores, los puntos se alinean de forma tan natural en una recta que forzar una curva no tiene sentido práctico.
+
+# Regresión Lineal Múltiple
+
+```{r}
+# Preparamos los datos de entrenamiento para la regresión múltiple
+# Eliminamos G3_bin y G_avg para evitar trampas y multicolinealidad
+train_limpio <- train_data |> 
+  dplyr::select(-G3_bin, -G_avg)
+
+test_limpio <- test_data |> 
+  dplyr::select(-G3_bin, -G_avg)
+```
+
+Es necesario eliminar estas dos variables ya que en el caso de "G3_bin" es una derivación de la variable que queremos predecir (G3), solo que en este caso únicamente categoriza la nota final como "suspenso" o "aprobado". Por otro lado, la variable "G_avg" es la media total, y si en su cálculo incluye la nota final (G3), como esta variable es la que queremos predecir, usar "G_avg" solo haría que el algoritmo no aprendiera a predecir G3, sino que se limitaría a despejar la ecuación de la media. Y, en el caso de que la media solo incluya las variables G1 y G2, aportaría la misma información que las variables individuales, que ya están en el modelo.
+
+## Selección de variables y regularización
+
+Vamos a seleccionar el mejor subconjunto de variables.
+
+### Selección de variables
+
+#### Métodos de selección exhaustiva
+
+##### Best Subset Selection
+
+```{r}
+# Calculamos el número de variables predictoras (p)
+# Restamos 1 para excluir la variable respuesta (G3)
+p <- ncol(train_limpio) - 1
+
+# Calculamos el número total de combinaciones posibles (2^p)
+modelos_posibles <- 2^p
+
+cat("Número de predictores (p):", p, "\n")
+cat("Modelos posibles a evaluar (2^p):", modelos_posibles)
+```
+
+Hemos descartado realizar la "Best Subset Selection" debido a su complejidad computacional. Este método lo que hace es evaluar todas las combinaciones posibles de predictores, creciendo exponencialmente ($2^p$ modelos posibles).
+
+#### Métodos automáticos
+
+```{r modelos seleccion}
+# Modelo inicial
+  # ~ 1 crea un modelo sin usar ninguna variable predictora
+  # Es el punto de partida. Se empieza con este modelo y se van añadiendo variables una a una para ver cual mejora más la predicción
+modelo_inicial <- lm(G3 ~ 1, data = train_limpio)
+
+# Modelo completo
+  # ~ . crea un modelo usando todas las variables del dataset
+  # Para ir añadiendo las variables al modelo
+modelo_completo <- lm(G3 ~ ., data = train_limpio)
+```
+
+##### Forward Selection
+
+Este método parte de un modelo vacío y prueba todas las variables predictoras del dataset una a una. En cada paso evalúa y guarda la variable que más mejore el modelo, hasta que guardar una variable no suponga ninguna mejora. Este modelo no puede eliminar variables una vez incluidas.
+
+```{r forward selection}
+# Forward selection usando AIC (cuanto menor AIC, mejor modelo)
+  # Al poner "modelo_inicial" al principio, le decimos a la función por donde empezar, es decir, con el modelo que no tiene variables predictoras, solo el intertcepto
+  # lower = modelo_inicial significa que como mínimo puede no tener las variables predictoras 
+  # upper = modelo_completo significa que como máximo puede meter en el modelo todas las variables del dataset
+  # direction = "forward" indica el método que estamos utilizando
+  # trace = FALSE para que no imprima todos los resultados, solo el resultado final
+forward_aic <- step(modelo_inicial, 
+                    scope = list(lower = modelo_inicial, upper = modelo_completo),
+                    direction = "forward", 
+                    trace = FALSE)
+
+cat("Variables seleccionadas:\n")
+
+# coef(forward_aic) saca las variables seleccionadas
+# [-1] para excluir el intercepto, que siempre va a ser la primera variable que saque
+forward_vars <- names(coef(forward_aic))[-1]
+
+cat(paste(forward_vars, collapse = ", "), "\n")
+cat("AIC final:", AIC(forward_aic), "\n")
+cat("Número de variables:", length(forward_vars), "\n\n")
+
+# Resumen del modelo final
+summary(forward_aic)
+```
+
+##### Backward Elimination
+
+Este método es inverso al Forward Selection. Lo que hace es partir del modelo completo, que contiene todas las variables predictoras del dataset, y en cada paso evalúa qué variable aporta menos información a nuestro modelo y la elimina. Así hasta que eliminar una variable suponga empeorar el modelo. En este caso, el modelo solo funciona si hay más variables que datos (en nuestro caso más alumnos que variables, y como tenemos 227 alumnos y 67 variables podemos usar este método).
+
+```{r backward elimination}
+# Backward elimination usando AIC (cuanto menor AIC, mejor modelo)
+  # Al poner "modelo_completo" al principio, le decimos a la función por donde empezar, es decir, con el modelo que tiene todas las variables predictoras de nuestro dataset
+  # direction = "backward" indica el método que estamos usando
+  # trace = FALSE para que no imprima todos los resultados, solo el resultado final
+backward_aic <- step(modelo_completo, 
+                     direction = "backward", 
+                     trace = FALSE)
+
+cat("Variables seleccionadas:\n")
+
+# coef(backward_aic) saca las variables seleccionadas
+# [-1] para excluir el intercepto, que siempre va a ser la primera variable que saque
+backward_vars <- names(coef(backward_aic))[-1]
+
+cat(paste(backward_vars, collapse = ", "), "\n")
+cat("AIC final:", AIC(backward_aic), "\n")
+cat("Número de variables:", length(backward_vars), "\n\n")
+
+# Resumen del modelo final
+summary(backward_aic)
+```
+
+##### Stepwise Selection
+
+En este caso, este método parte de un modelo vacío y en cada paso evalúa si añadir una nueva variable que mejore el modelo, como en el de Forward Selection. Pero este método lo que hace es que tras cada incorporación de una variable nueva, comprueba si alguna de las variables que ya se habían añadido al modelo ha dejado de ser relevante y se puede eliminar. La limitación de este método es que solo encuentra un único óptimo local, es decir, encuentra el mejor modelo siguiendo un camino específico, pero no garantiza encontrar el mejor modelo de entre todas las combinaciones posibles, ya que no evalúa el espacio completo de modelos.
+
+```{r stepwise selection}
+# Stepwise selection usando AIC (cuanto menor AIC, mejor modelo)
+  # Al poner "modelo_inicial" al principio, le decimos a la función por donde empezar, es decir, con el modelo que no tiene variables predictoras, solo el intertcepto
+  # lower = modelo_inicial significa que como mínimo puede no tener las variables predictoras 
+  # upper = modelo_completo significa que como máximo puede meter en el modelo todas las variables del dataset
+  # direction = "both" indica el método que estamos utilizando, en este caso es una mezcla del Forward y el Backward
+  # trace = FALSE para que no imprima todos los resultados, solo el resultado final
+stepwise_aic <- step(modelo_inicial, 
+                     scope = list(lower = modelo_inicial, upper = modelo_completo),
+                     direction = "both", 
+                     trace = FALSE)
+
+cat("Variables seleccionadas:\n")
+
+# coef(stepwise_aic) saca las variables seleccionadas
+# [-1] para excluir el intercepto, que siempre va a ser la primera variable que saque
+stepwise_vars <- names(coef(stepwise_aic))[-1]  
+
+cat(paste(stepwise_vars, collapse = ", "), "\n")
+cat("AIC final:", AIC(stepwise_aic), "\n")
+cat("Número de variables:", length(stepwise_vars), "\n\n")
+
+# Resumen del modelo final
+summary(stepwise_aic)
+```
+
+#### Comparación de los métodos automáticos
+
+```{r comparacion metodos automaticos}
+# Comparación de métodos automáticos
+metodos_automaticos <- data.frame(
+  Metodo = c("Forward", "Backward", "Stepwise"),
+  N_Variables = c(length(forward_vars), length(backward_vars), length(stepwise_vars)),
+  AIC = c(AIC(forward_aic), AIC(backward_aic), AIC(stepwise_aic)),
+  R2_adj = c(summary(forward_aic)$adj.r.squared,
+             summary(backward_aic)$adj.r.squared,
+             summary(stepwise_aic)$adj.r.squared)
+)
+
+print(metodos_automaticos)
+```
+
+Como se puede ver en la tabla, con los tres métodos hemos obtenido los mismos resultados. En todos los casos se selecciona un subconjunto de 10 variables predictoras (G2, sexM, schoolMS, G1, reasonhome, reasonother, reasonreputation, failures, addressU, freetime). También hemos obtenido que $R^2_{adj} = 0.8485$, es decir, que nuestro modelo explica un 84.85% de la variabilidad total a partir únicamente de las 10 variables seleccionadas.
+
+Los asteriscos que se pueden ver en los resultados de cada método muestran, a partir del p-valor, la importancia de una variable para nuestro modelo. Cuantos más asteriscos tenga, más importante es. Y si no tiene ningún asterisco significa que no es una variable relevante, que no nos da suficiente información. En el resumen de cada uno de los métodos se puede ver que la variable más relevante es "G2" con $p-valor < 2e-16$.
+
+#### Comparación de las variables seleccionadas
+
+```{r comparacion seleccion}
+# Crear matriz de comparación de variables seleccionadas
+todas_vars <- names(train_limpio)[-which(names(train_limpio) == "G3")]
+
+comprobar_variables <- function(variable, seleccionadas) {
+  # Coprobar si alguna de las variables seleccionadas empieza con el nombre de mi variable
+  # Lo hacemos así por la división en niveles
+  any(startsWith(x = seleccionadas, prefix = variable))
+}
+
+# sapply() mira en una lista de elementos uno a uno y devuelve los resultado en un vector
+comparacion_seleccion <- data.frame(
+  Forward = sapply(todas_vars, comprobar_variables, seleccionadas = forward_vars),
+  Backward = sapply(todas_vars, comprobar_variables, seleccionadas = backward_vars),
+  Stepwise = sapply(todas_vars, comprobar_variables, seleccionadas = stepwise_vars)
+)
+
+print(comparacion_seleccion)
+```
+
+Esta tabla muestra la selección de variables de cada método que, en este caso, los tres seleccionan las mismas variables (school, sex, address, reason, failures, freetime, G1, G2).
+
+### Regularización
+
+```{r regularizacion}
+# Creamos las matrices
+  # Usamos model.matrix para convertir las variables categóricas a 0 y 1
+  # glmnet solo admite numéros, así que creamos matrices numéricas
+  # Hay que poner [, -1] para eliminar la columna de unos del intercepto que se crea
+
+X_train <- model.matrix(G3 ~ ., data = train_limpio)[, -1] # Variables predictoras
+y_train <- train_limpio$G3 # Variables respuesta
+
+X_test <- model.matrix(G3 ~ ., data = test_limpio)[, -1] # Variables predictoras
+y_test <- test_limpio$G3 # Variables respuesta
+
+cat("Entrenamiento:", nrow(X_train), "observaciones\n")
+cat("Prueba:", nrow(X_test), "observaciones\n")
+cat("Variables predictoras:", ncol(X_train), "\n")
+```
+
+```{r lambda grid}
+# Grid de valores lambda
+  # 100 números que van desde 10 hasta -2
+  # Eleva 10 a cada uno de esos números
+lambda_grid <- 10^seq(10, -2, length = 100)
+```
+
+#### Modelo Ridge
+
+En este modelo, cuanto más aumenta el valor de lambda, más se reduce la magnitud de los coeficientes acercándose cada vez más a 0, pero el valor nunca va a ser un 0 absoluto.
+
+```{r ridge}
+# Modelo Ridge (alpha = 0)
+  # Para Ridge se usa alpha = 0 (alpha = 1 es para lasso)
+
+# Ajustar Ridge regression
+ridge_model <- glmnet(X_train, y_train, alpha = 0, lambda = lambda_grid, standardize = TRUE) 
+
+# Validación cruzada para seleccionar lambda óptimo
+  # cv.glmnet divide los datos de entrenamiento en 10 trozos (nfolds = 10)
+  # Entrena con 9 y prueba con 1, repitiendo el proceso para encontrar qué lambda funciona mejor
+ridge_cv <- cv.glmnet(X_train, y_train, alpha = 0, lambda = lambda_grid, nfolds = 10) 
+
+# Lambda óptimo
+  # lambda.min es el valor exacto que consigue el menor error posible en la validación cruzada
+  # lambda.1se es un lambda un poco más fuerte pero cuyo error no se aleja más de 1 Desviación Estándar del error mínimo
+lambda_ridge_min <- ridge_cv$lambda.min
+lambda_ridge_1se <- ridge_cv$lambda.1se
+
+cat("Lambda mínimo:", lambda_ridge_min, "\n")
+cat("Lambda 1SE:", lambda_ridge_1se, "\n")
+
+# Predicciones en conjunto de prueba
+  # Ponemos a prueba los dos lambdas usando datos nuevos
+ridge_pred_min <- predict(ridge_model, s = lambda_ridge_min, newx = X_test)
+ridge_pred_1se <- predict(ridge_model, s = lambda_ridge_1se, newx = X_test)
+
+# Métricas de rendimiento
+  # RMSE (Raíz del Error Cuadrático Medio) nos dice por cuanto se equivoca el modelo de media
+ridge_rmse_min <- sqrt(mean((ridge_pred_min - y_test)^2))
+ridge_rmse_1se <- sqrt(mean((ridge_pred_1se - y_test)^2))
+ 
+cat("RMSE (lambda min):", round(ridge_rmse_min, 3), "\n")
+cat("RMSE (lambda 1SE):", round(ridge_rmse_1se, 3), "\n")
+
+# Coeficientes finales
+  # Extraemos el peso que el modelo le ha dado a cada variable con el mejor lambda
+ridge_coefs <- predict(ridge_model, type = "coefficients", s = lambda_ridge_min)[, 1]
+print(round(ridge_coefs, 4))
+```
+
+Tras haber probado los 100 valores, concluyó que el mejor lambda para minimizar el error (lambda.min) es 0.0231013. Y Lambda 1SE = 1.149757, que en este caso, este lambda lo que hace es evitar el sobreajuste, aunque no minimiza el error como el otro. Pero, como se puede ver, el error apenas cambia entre un lambda y otro (aumentando solo de 0.986 a 0.989).
+
+Y, si miramos los coeficientes, podemos ver que para este modelo nunca son cero, es decir, el modelo Ridge no elimina ninguna variable.
+
+```{r}
+# Gráfico de validación cruzada
+plot(ridge_cv, main = "Validación Cruzada - Ridge Regression")
+```
+
+En este gráfico en el eje Y se encuentra el error del modelo (cuanto más bajo mejor), y en el eje X "$-log(\lambda)$", que es el lambda pero en escala logarítmica.
+
+Cada uno de los puntos rojos es uno de los 100 valores que se le ha dado a lambda y las líneas grises que hay alrededor de estos puntos indican el margen de error, es decir, la desviación estándar.
+
+A la derecha se pueden ver dos líneas discontinuas verticales que indican los mejores lambdas, la de la izquierda es "lambda.min" y la de la derecha "lambda.1se".
+
+Y encima aparece el número 49 de forma constante, que indica el número de variables predictoras que usa el modelo en cada momento, que en este caso siempre son 49, lo que confirma que el modelo Ridge no elimina ninguna variable.
+
+#### Modelo Lasso
+
+En este caso, cuanto más aumenta el valor de lambda, mayor es el número de coeficientes que tienen valor 0, lo que hace que esas variables sean eliminadas.
+
+```{r lasso}
+# Modelo Lasso (alpha = 1)
+  # Para Lasso se usa alpha=1 (alpha=0 es para ridge)
+
+# Ajustar Lasso regression
+lasso_model <- glmnet(X_train, y_train, alpha = 1, lambda = lambda_grid, standardize = TRUE) 
+
+# Validación cruzada para seleccionar lambda óptimo
+  # cv.glmnet divide los datos de entrenamiento en 10 trozos (nfolds = 10)
+  # Entrena con 9 y prueba con 1, repitiendo el proceso para encontrar qué lambda funciona mejor
+lasso_cv <- cv.glmnet(X_train, y_train, alpha = 1, lambda = lambda_grid, nfolds = 10) 
+
+# Lambda óptimo
+  # lambda.min es el valor exacto que consigue el menor error posible en la validación cruzada
+  # lambda.1se es un lambda un poco más fuerte pero cuyo error no se aleja más de 1 Desviación Estándar del error mínimo
+lambda_lasso_min <- lasso_cv$lambda.min
+lambda_lasso_1se <- lasso_cv$lambda.1se
+
+cat("Lambda mínimo:", lambda_lasso_min, "\n")
+cat("Lambda 1SE:", lambda_lasso_1se, "\n")
+
+# Predicciones en conjunto de prueba
+  # Ponemos a prueba los dos lambdas usando datos nuevos
+lasso_pred_min <- predict(lasso_model, s = lambda_lasso_min, newx = X_test)
+lasso_pred_1se <- predict(lasso_model, s = lambda_lasso_1se, newx = X_test)
+
+# Métricas de rendimiento
+  # RMSE (Raíz del Error Cuadrático Medio) nos dice por cuanto se equivoca el modelo de media
+lasso_rmse_min <- sqrt(mean((lasso_pred_min - y_test)^2))
+lasso_rmse_1se <- sqrt(mean((lasso_pred_1se - y_test)^2))
+
+cat("RMSE (lambda min):", round(lasso_rmse_min, 3), "\n")
+cat("RMSE (lambda 1SE):", round(lasso_rmse_1se, 3), "\n")
+
+# Coeficientes finales (Lasso puede hacer coeficientes = 0)
+  # Extrae los coeficientes del mejor modelo
+lasso_coefs <- predict(lasso_model, type = "coefficients", s = lambda_lasso_min)[, 1]
+print(round(lasso_coefs, 4))
+
+# Variables seleccionadas por Lasso
+  # Como los coeficientes pueden ser 0, nos quedamos únicamente con los que no lo sean (!= 0)
+vars_lasso <- names(lasso_coefs[lasso_coefs != 0])[-1]  # Excluir intercepto
+
+cat("\nVariables seleccionadas por Lasso:", paste(vars_lasso, collapse = ", "), "\n")
+cat("Número de variables seleccionadas:", length(vars_lasso), "\n")
+```
+
+En el modelo Lasso el mejor lambda para minimizar el error (lambda.min) nos ha salido que es 0.09326033 , y Lambda 1SE = 0.4977024, que es el lambda que evita el sobreajuste. El error ha mejorado, es decir, el modelo Lasso se equivoca menos al predecir con los nuevos datos. Ahora el error cuadrático medio es 0.812 para lambda.min y 0.789 para lambda.1se, y aquí se puede ver que lambda.min no tiene porque ser la mejor opción, ya que en este caso tiene menor error lambda.1se.
+
+Además, en este caso se pueden ver muchos coeficientes que son cero, y lo que hace este modelo es eliminarlos y quedarse con los que son distintos de cero, quedándose únicamente con 10 variables predictoras (schoolMS, sexM, addressU, Mjobother, reasonother, failures, famsupyes, freetime, G1, G2).
+
+```{r}
+# Gráfico de validación cruzada
+plot(lasso_cv, main = "Validación Cruzada - Lasso Regression")
+```
+
+Al igual que en el gráfico anterior, en el eje Y se encuentra el error del modelo (cuanto más bajo mejor), y en el eje X "$-log(\lambda)$", que es el lambda pero en escala logarítmica.
+
+Cada uno de los puntos rojos es uno de los 100 valores que se le ha dado a lambda y las líneas grises que hay alrededor de estos puntos indican el margen de error, es decir, la desviación estándar.
+
+A la derecha se pueden ver dos líneas discontinuas verticales que indican los mejores lambdas, la de la izquierda es "lambda.min" y la de la derecha "lambda.1se".
+
+Y encima aparece una serie de número que indica el número de variables predictoras que usa el modelo en cada momento. Al principio, cuando lambda es un valor grande, el modelo tiene cero variables, pero a medida que lambda disminuye, las variables predictoras aumentan.
+
+Al principio, cuando el valor de lambda es más grande y no se usa ninguna variable predictora, el error se mantiene constante y elevado, hasta que llega un punto, cuando se reduce el lambda y se utilizan unas pocas variables predictoras, en el que la curva roja desciende y se mantiene muy baja. Por lo que se puede ver que no se necesitan las 67 variables predictoras para predecir bien y que el error sea bajo.
+
+#### Elastic Net
+
+Este modelo calcula el parámetro alpha, cuanto más se acerque a 1 significa que se comporta como Lasso, y cuanto más se acerque a 0, su comportamiento de acerca más al del modelo Ridge.
+
+```{r elastic net}
+# Grid de valores alpha para Elastic Net
+alpha_grid <- seq(0, 1, length = 11)
+
+# Función para encontrar el mejor alpha
+  # A partir de un valor de alpha entrena el modelo, hace validación cruzada y devuelve el error mínimo que ha conseguido
+best_alpha_search <- function(alpha_val) {
+  cv_result <- cv.glmnet(X_train, y_train, alpha = alpha_val, lambda = lambda_grid, nfolds = 10)
+  return(data.frame(alpha = alpha_val, 
+                   lambda_min = cv_result$lambda.min,
+                   cvm_min = min(cv_result$cvm)))
+}
+
+# Buscar mejor alpha
+  # map_dfr() le pasa todos los valores de alpha a la función y guarda todos los resultados en una tabla
+alpha_results <- map_dfr(alpha_grid, best_alpha_search)
+
+  # Buscamos en la tabla la fila con el error más bajo (cvm_min)
+best_alpha <- alpha_results$alpha[which.min(alpha_results$cvm_min)]
+
+cat("Mejor alpha:", best_alpha, "\n")
+
+# Ajustar Elastic Net con mejor alpha
+  # A partir del aplpha que nos haya salido entrenamos el modelo final
+elastic_model <- glmnet(X_train, y_train, alpha = best_alpha, lambda = lambda_grid, standaridze = TRUE) 
+elastic_cv <- cv.glmnet(X_train, y_train, alpha = best_alpha, lambda = lambda_grid, nfolds = 10)
+
+  # lambda.min es el valor exacto que consigue el menor error posible en la validación cruzada
+lambda_elastic_min <- elastic_cv$lambda.min
+cat("Lambda óptimo:", lambda_elastic_min, "\n")
+
+# Predicciones en conjunto de prueba
+  # Ponemos a prueba nuestro modelo usando datos nuevos
+elastic_pred <- predict(elastic_model, s = lambda_elastic_min, newx = X_test)
+
+  # RMSE (Raíz del Error Cuadrático Medio) nos dice por cuanto se equivoca el modelo de media
+elastic_rmse <- sqrt(mean((elastic_pred - y_test)^2))
+
+cat("RMSE:", round(elastic_rmse, 3), "\n")
+
+# Coeficientes finales
+elastic_coefs <- predict(elastic_model, type = "coefficients", s = lambda_elastic_min)[, 1]
+print(round(elastic_coefs, 4))
+
+# Variables seleccionadas por Elastic Net
+  # > 1e-6 para que solo muestre las variables cuyo valor absoluto sea mayor a un número muy pequeño
+vars_elastic <- names(elastic_coefs[abs(elastic_coefs) > 1e-6])[-1]  # Excluir intercepto
+
+cat("\nVariables seleccionadas por Elastic Net:", paste(vars_elastic, collapse = ", "), "\n")
+cat("Número de variables seleccionadas:", length(vars_elastic), "\n")
+```
+
+En este modelo el parámetro que obtenemos, además del lambda óptimo (0.1232847), es el alpha, que controla el peso de cada método. Como hemos obtenido $\alpha = 1$, significa que nuestro modelo es un 100% Lasso y un 0% Ridge.
+
+Al ser en su totalidad Lasso, el modelo tiene coeficientes que son cero, por lo que elimina esas variables y se queda con las que tienen un coeficiente distinto a cero.
+
+El error de este modelo nos ha dado 0.796, que se acerca más al del modelo Lasso que al del modelo Ridge.
+
+Finalmente este modelo, de las 67 variables predictoras totales, se ha quedado únicamente con 8.
+
+#### Comparación de los métodos de regularización
+
+```{r comparacion regularizacion}
+# Comparar todos los métodos de regularización
+comparacion_reg <- data.frame(
+  Metodo = c("Ridge (min)", "Ridge (1SE)", "Lasso (min)", "Lasso (1SE)", "Elastic Net"),
+  RMSE = c(ridge_rmse_min, ridge_rmse_1se, lasso_rmse_min, lasso_rmse_1se, elastic_rmse),
+  N_Variables = c(sum(abs(ridge_coefs[-1]) > 1e-6),
+                  sum(abs(predict(ridge_model, type = "coefficients", s = lambda_ridge_1se)[-1, 1]) > 1e-6),
+                  length(vars_lasso),
+                  sum(abs(predict(lasso_model, type = "coefficients", s = lambda_lasso_1se)[-1, 1]) > 1e-6),
+                  length(vars_elastic))
+) # [-1, 1] para quitar el intercepto (-1)
+
+print(comparacion_reg)
+```
+
+Tras comparar los tres métodos de regularización, el modelo Ridge mantiene todas las variables predictoras (49) y es el de error más alto. Por otro lado, Elastic Net baja disminuye bastante el error y solo usa 8 variables predictoras. Sin embargo, como se puede ver en la tabla, la mejor opción es el modelo Lasso (1SE), ya que es el de error más bajo (0.7886541) y únicamente utiliza 2 variables, por lo que destaca por su simplicidad.
+
+```{r}
+# Gráfico de comparación
+ggplot(comparacion_reg, aes(x = N_Variables, y = RMSE, color = Metodo)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = Metodo), hjust = 0, vjust = -0.5, size = 3) +
+  labs(title = "Comparación de Métodos de Regularización",
+       x = "Número de Variables Efectivas", 
+       y = "RMSE en Conjunto de Prueba") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+En la gráfica, en el eje Y se encuentra el error y en el eje X el número de variables. Cuanto más cerca de la esquina inferior izquierda mejor es el modelo, ya que es donde hay tanto menor error como menor número de variables. Y como se puede observar, el modelo más cercano a esa esquina es Lasso (1SE).
+
+## Selección del mejor modelo de regresión lineal múltiple
+
+```{r}
+# Predicciones del modelo Stepwise sobre el conjunto de TEST
+pred_stepwise <- predict(stepwise_aic, newdata = test_limpio)
+
+# Calcular el RMSE real de Stepwise
+rmse_stepwise_test <- sqrt(mean((pred_stepwise - test_limpio$G3)^2))
+
+cat("RMSE Test Stepwise:", rmse_stepwise_test, "\n")
+cat("RMSE Test 1SE:", lasso_rmse_1se, "\n")
+```
+
+En la selección de variables vimos que con todos los métodos obtenemos los mismos resultados, y en la regularización nos quedamos con el modelo Lasso (1SE), pero si comparas ambos modelos, además de que el modelo Lasso utiliza menos variables (2), también tiene menor error, por lo que es la mejor opción.
+
+```{r}
+# Coeficientes finales de Lasso 1SE (modelo seleccionado)
+  # Extraemos los coeficientes usando lambda_lasso_1se en lugar de lambda_lasso_min
+lasso_coefs_1se <- predict(lasso_model, type = "coefficients", s = lambda_lasso_1se)[, 1]
+
+# Imprimimos solo los coeficientes que no son cero para verlos limpios
+coeficientes <- lasso_coefs_1se[lasso_coefs_1se != 0]
+print(round(coeficientes, 4))
+
+# Variables seleccionadas por Lasso (1SE)
+vars_lasso_1se <- names(coeficientes)[-1]  # Eliminar el intercepto
+
+cat("\nVariables seleccionadas por Lasso (1SE):", paste(vars_lasso_1se, collapse = ", "), "\n")
+cat("Número de variables seleccionadas:", length(vars_lasso_1se), "\n")
+```
+
+Aquí podemos ver que las 2 únicas variables con las que se queda el modelo Lasso (1SE) son "G1" y "G2".
+
+## Modelos no lineales y transformación de variables
+
+### Modelos no lineales
+
+Como únicamente vamos a utilizar las variables G1 y G2, claramente va a haber una relación lineal, ya que estas variables representan las calificaciones de cada uno de los alumnos que evalúan los mismos conocimientos que la nota final (G3), por lo que la progresión académica del estudiante sigue una tendencia continua, donde los resultados del primer periodo (G1) y del segundo (G2) marcan una progresión lineal hacia el resultado final (G3).
+
+Vamos a comprobarlo a partir de un diagnóstico con gráficos CPR (Gráficos de Componente más Residuo).
+
+```{r modelos no lineales}
+modelo_lineal <- lm(G3 ~ G1 + G2 , data = train_limpio)
+
+car::crPlots(modelo_lineal)
+```
+
+Aquí se ve claramente que en ambos casos las líneas rosas están superpuestas sobre las azules, lo que reafirma lo que ya habíamos dicho, que existe una relación lineal.
+
+### Transformación de variables
+
+Dado que ninguna de las 2 variables seleccionadas nos ha dado problemas y ambas tienen una relación lineal adecuada, no es necesario aplicar transformaciones a ninguna de ellas.
+
+## Diagnóstico del modelo
+
+Como hemos observado que el modelo Lasso es la mejor opción, es el que vamos a utilizar para el diagnóstico de nuestro modelo. Por lo que vamos a coger las 2 variables que ha seleccionado.
+
+```{r}
+# Cogemos las 2 variables que ha seleccionado el modelo Lasso (1SE)
+modelo_final <- lm(G3 ~ G2 + G1, 
+                   data = train_limpio)
+
+summary(modelo_final)
+```
+
+### Análisis de multicolinealidad (VIF)
+
+La multicolinealidad consiste en una correlación alta entre variables predictoras, lo que hace que se arruine la interpretación práctica del modelo.
+
+```{r}
+# Calculamos el Factor de Inflación de la Varianza (VIF)
+vif_values <- vif(modelo_final)
+print(vif_values)
+
+cat("\nInterpretación del VIF:\n")
+cat("- VIF < 5: No hay problema de multicolinealidad\n")
+cat("- 5 ≤ VIF < 10: Multicolinealidad moderada\n")
+cat("- VIF ≥ 10: Multicolinealidad severa\n\n")
+
+for(i in 1:length(vif_values)) {
+  var_name <- names(vif_values)[i]
+  vif_val <- vif_values[i]
+  
+  if(vif_val < 5) {
+    status <- "OK"
+  } else if(vif_val < 10) {
+    status <- "Moderada"
+  } else {
+    status <- "Severa"
+  }
+  
+  cat(var_name, ": VIF =", round(vif_val, 2), "(", status, ")\n")
+}
+
+# Modelo con mayor multicolinealidad
+modelo_colineal <- lm(G3 ~ G1 + G2 + absences + failures + studytime + age + traveltime, data = train_limpio)
+vif_colineal <- vif(modelo_colineal)
+
+# Modelo con más variables (mayor multicolinealidad)
+print(round(vif_colineal, 2))
+```
+
+En estos resultados se puede ver que el VIF obtenido de nuestro modelo final, tanto para G1 como para G2 es 4.37, que está dentro del margen aceptable (4.37 \< 5), lo que garantiza que no existe multicolinealidad.
+
+Al contrastarlo con un modelo con más variables se observa que el VIF aumenta, el de G1 pasa a ser 4.61 y el de G2 4.56, pero sigue sin superar el umbral de 5, por lo que se reafirma que en nuestro modelo no ha multicolinealidad.
+
+### Análisis de los residuos
+
+Antes ya hemos comprobado mediante los gráficos CPR que ambas variables presentan una relación lineal, ahora vamos a analizar todos los residuos para comprobar si hay algún error en nuestro modelo que no haya sido observado.
+
+```{r fig.width=8, fig.height=8}
+par(mfrow = c(2, 2))
+plot(modelo_final)
+par(mfrow = c(1, 1))
+```
+
+El gráfico de "Residuals vs Fitted values" sirve para comprobar la linealidad. Se observa que la línea roja es prácticamente recta sobre el cero, lo que significa que, como ya habíamos comprobado antes, el supuesto de linealidad se cumple.
+
+En el caso de "Q-Q Residuals", para que haya normalidad los puntos tienen que seguir la línea discontinua y, sin embargo, aunque casi todos los datos lo hacen, en el extremo izquierdo, hay puntos que se alejan, y a la derecha del todo hay un punto al que le pasa lo mismo. Por lo que no siguen una distribución normal.
+
+En el de "Scale-Location", para que haya homocedasticidad la línea tiene que ser completamente recta y la dispersión de los residuos no tendría que cambiar. Sin embargo, en nuestro gráfico se puede ver que la línea roja no es plana, sino que tiene curvatura. Y, en cuanto a la dispersión de los residuos, no es constante, por lo que no podemos decir que haya homocedasticidad.
+
+Y, por último, "Residuals vs Leverage" evalúa la presencia de puntos influyentes. Se puede ver que la mayoría de las observaciones tienen poco Leverage, y ninguna de ellas supera las líneas de la Distancia de Cook.
+
+#### Análisis de las observaciones atípicas
+
+En todos estos gráficos se puede ver que se han etiquetado algunas observaciones, que como se muestra en los gráficos todas ellas están alejadas del resto de residuos, y son los puntos influyentes que destacan y que se deben a resultados atípicos, entonces vamos a analizarlos para comprender a qué se debe.
+
+```{r}
+# Guardamos las observaciones atípicas señaladas en los gráficos
+obs_atipicas <- as.character(c(164, 584, 587, 640))
+
+# Extraemos sus notas reales de G1, G2 y G3
+analisis_outliers <- train_limpio[rownames(train_limpio) %in% obs_atipicas, c("G1", "G2", "G3")]
+
+# Añadimos la predicción matemática del modelo y el residuo (error de predicción)
+analisis_outliers$Prediccion <- predict(modelo_final, newdata = train_limpio[obs_atipicas, ])
+analisis_outliers$Residuo <- analisis_outliers$G3 - analisis_outliers$Prediccion
+
+# Mostramos la tabla para entender el comportamiento
+print(analisis_outliers)
+```
+
+Aquí se puede ver por qué estas observaciones son atípicas. Por ejemplo, para la observación 164, como se muestra en la tabla, en el primer periodo (G1) tiene un 11, lo que quiere decir que está aprobado, y en el segundo periodo un 9, es decir, que está casi aprobado. A partir de estos resultados, el modelo predijo una nota final (G3) de 9.423437, pero sin embargo obtuvo un 0, lo que ha hecho que se genere un residuo negativo (-9.423437). Y lo mismo ha ocurrido con las otras tres observaciones (584, 587 y 640), donde en todas la nota cae con un resultado en la nota final (G3) de 0.
+
+#### Verificar supuestos
+
+```{r}
+# Normalidad de residuos (orientativo)
+shapiro <- shapiro.test(resid(modelo_final))
+
+# Homocedasticidad (Breusch–Pagan)
+bp <- lmtest::bptest(modelo_final)
+
+# Independencia / autocorrelación (Durbin–Watson)
+dw <- lmtest::dwtest(modelo_final)
+
+list(
+  shapiro = shapiro,
+  breusch_pagan = bp,
+  durbin_watson = dw
+)
+```
+
+Dado que ninguno de los p-valores de estos supuestos son mayores que 0.05, podemos decir que no se cumplen. Esto significa que rechazamos la hipótesis nula ($H_0$).
+
+En el caso del test de normalidad (Shapiro-Wilk) tenemos que la hipótesis nula ($H_0$) es que los residuos siguen una distribución normal y la hipótesis alternativa ($H_1$) que no la siguen.
+
+Para el test de homocedasticidad (Breusch-Pagan), $H_0$ significa que existe homocedasticidad y $H_1$ que existe heterocedasticidad.
+
+Y, por último, para el test de independencia (Durbin-Watson) $H_0$ es que los residuos son independientes y $H_1$ que no lo son.
+
+Y como ninguna de las hipótesis nulas se cumplen, nuestros residuos no siguen una distribución normal, existe heterocedasticiad y no son independientes.
+
+### Observaciones influyentes (outliers)
+
+```{r}
+n <- nobs(modelo_final)
+p <- length(coef(modelo_final))
+
+lev <- hatvalues(modelo_final)
+cook <- cooks.distance(modelo_final)
+dff <- dffits(modelo_final)
+dfb <- dfbetas(modelo_final)
+
+# Umbrales
+cook_thr <- 4/n
+lev_thr  <- 2*p/n
+dfb_thr  <- 2/sqrt(n)
+
+# Índices sospechosos
+idx_cook <- which(cook > cook_thr)
+idx_lev  <- which(lev  > lev_thr)
+idx_dff  <- which(abs(dff) > 2*sqrt(p/n))
+
+# Resumen
+list(
+  n = n, p = p,
+  cook_threshold = cook_thr,
+  leverage_threshold = lev_thr,
+  dfbetas_threshold = dfb_thr,
+  idx_high_cook = idx_cook,
+  idx_high_leverage = idx_lev,
+  idx_high_dffits = idx_dff
+)
+```
+
+Aquí, el valor de n es el tamaño muestral (387) y p es el número de parámetros (3). Al hacer $cook_thr <- 4/n$, que es la distancia de Cook, hemos obtenido un valor de 0.01033592, y nos ha dado que hay 16 observaciones que influyen significativamente en nuestro modelo (las mismas observaciones que superan el umbral de DFFITS). $lev_thr  <- 2*p/n$ calcula el Leverage, que es 0.01550388, y utilizando este umbral hemos obtenido 27 observaciones con valores extremos en sus variables predictoras.
+
+```{r}
+# Rankin de las observaciones influyentes
+influence_tbl <- tibble(
+  obs = seq_len(n),
+  leverage = lev,
+  cooks_d = cook,
+  dffits = dff
+) %>%
+  arrange(desc(cooks_d))
+
+influence_tbl %>% slice(1:10)
+```
+
+Para que una observación sea influyente tiene que superar los umbrales de Cook (0.5 o 1), sin embargo, como se puede observar ninguna de nuestras observaciones los supera, ya que la primera observación que aparece en esta tabla es la 382 con una distancia de Cook de 0.26696844 , y como este es el valor máximo y no supera ninguno de los umbrales, ninguna observación lo hará.
+
+```{r}
+# Observaciones con al menos un DFBETAS grande
+idx_dfb <- which(apply(abs(dfb) > dfb_thr, 1, any))
+
+idx_dfb
+```
+
+Los DFBETAS evalúan qué observaciones afectan a qué coeficientes específicos. Nuestro modelo tiene 3 parámetros (p), y se busca si alguna observación cambia significativamente alguno de los coeficientes (DFBETAS altos).
+
+```{r}
+# Ver qué coeficientes son los más afectados
+if (length(idx_dfb) > 0) {
+  dfb_big <- as.data.frame(dfb[idx_dfb, , drop = FALSE])
+  dfb_big$obs <- idx_dfb
+  dfb_big %>%
+    relocate(obs) %>%
+    arrange(desc(rowSums(abs(across(where(is.numeric), ~ .x)))))
+} else {
+  cat("No se detectaron observaciones con DFBETAS por encima del umbral 2/sqrt(n).\n")
+}
+```
+
+Esta tabla representa el impacto de cada observación sobre los coeficientes del modelo y, como se puede ver, ningún coeficiente muestra un cambio significativo. Por lo que, a pesar de que, como hemos visto, hay observaciones con DFBETAS altos, como hemos observado antes en la Distancia de Cook, ningún cambio es lo suficientemente fuerte como para cambiar significativamente nuestro modelo. Lo que reafirma nuestra decisión de no eliminar ninguna observación.
+
+#### Gráfico de influencia (leverage vs residuos estudentizados) con Cook
+
+```{r}
+# id = list(n = 5) etiqueta las 5 burbujas más grandes o alejadas (las observaciones más influyentes)
+car::influencePlot(modelo_final, id = list(n = 5), main = "Influence Plot", sub = "Tamaño ~ Cook's distance")
+```
+
+Esta tabla nos muestra las observaciones más influyentes de nuestro modelo. En el caso de la observación 164, presenta un Residuo Estudentizado muy negativo (-7.2176215), lo que significa que ha habido un error de predicción, el modelo predecía que el alumno iba a sacar buena nota y en realidad no la sacó. Pero el valor de la Distancia de Cook más alto sigue siendo 0.26696844, por lo que sigue sin haber alguna observación que supere los umbrales de Cook.
+
+En el gráfico se representa el análisis visual de las observaciones influyentes. En la leyenda superior confirmamos que el valor máximo de la Distancia de Cook es 0.267, que como ya sabíamos no supera los umbrales de Cook. Las burbujas representan la influencia de cada observación. Que una burbuja sea grande significa que si eliminas esa observación del modelo, los coeficientes cambiarían significativamente, mientras que si es pequeña, al eliminarla apenas cambiaría. En el eje X se encuentra el Leverage, las burbujas que se encuentran a la izquierda (con menos Leverage) son las observaciones estándar, mientras que las que están a la derecha (Leverage alto) son las observaciones atípicas. Y el eje Y son los Residuos Estudentizados, es decir, el error de predicción, cuando una burbuja se encuentra cerca del 0 significa que el modelo ha acertado al predecir, mientras que cuanto más se aleje del 0, más ha fallado el modelo en su predicción.
+
+Y, como ya hemos comprobado anteriormente, las observaciones más influyentes se deben a un error en la predicción, es decir, que a partir de las notas de G1 y G2 el modelo predijo una nota para G3 y sin embargo se obtuvo un 0 en la nota final.
+
+#### Tratamiento de puntos influyentes
+
+```{r}
+idx_remove <- which(cook > cook_thr)
+
+if (length(idx_remove) > 0) {
+  datos_sin <- train_limpio[-idx_remove, ]
+  modelo_sin <- update(modelo_final, data = datos_sin)
+
+  cat("Observaciones eliminadas (Cook alto):", idx_remove, "\n\n")
+  cat("Comparación de coeficientes (original vs sin influyentes):\n")
+  print(cbind(original = coef(modelo_final), sin_influyentes = coef(modelo_sin)))
+} else {
+  cat("No hay observaciones con Cook's distance por encima de 4/n.\n")
+}
+```
+
+En esta tabla podemos ver lo que ocurre al quitar los puntos más influyentes. Como se puede observar, ninguna de las 2 variables predictoras (G1 y G2) sufre grandes cambios, por lo que no habría que prescindir de ninguna de ellas, ya que ambas son relevantes.
+
+# Modelos de Regresión Generalizada
+
+En esta sección ampliaremos nuestro análisis utilizando Modelos Lineales Generalizados (GLM). La regresión lineal múltiple asume que la variable respuesta es continua y tiene una distribución normal. Sin embargo, en nuestro caso, las calificaciones son números enteros acotados entre 0 y 20, y existe una asimetría en su distribución.
+
+Para estudiar esto, omitiremos las notas parciales (G1 y G2). Como vimos en los modelos anteriores, están fuertemente correlacionadas con la nota final (G3). Para evitar que estas variables absorban toda la variabilidad y poder analizar el impacto real de los factores sociales, familiares y académicos, planteamos los siguientes enfoques generalizados:
+
+1.  Un modelo de **Regresión Logística** para predecir la probabilidad de que un alumno apruebe o suspenda.
+2.  Un modelo de **Regresión de Poisson** para modelar la nota exacta como un dato de conteo.
+3.  Un modelo **Binomial Negativo** para corregir la posible sobredispersión de los datos.
+
+## Regresión Logística (Predicción de Aprobado/Suspenso)
+
+Utilizaremos la variable G3_bin (previamente creada en el preprocesamiento), donde los alumnos están clasificados como "Aprobado" (G3 $\geq$ 10) o "Suspenso".
+
+El modelo logístico utiliza la función de enlace *logit*:
+
+$$\text{logit}(p) = \log\left(\frac{p}{1-p}\right) = \beta_0 + \beta_1 X_1 + \dots + \beta_k X_k$$
+
+```{r mrg-logistica}
+# Ajuste del modelo de Regresión Logística
+# Usamos train_data porque contiene la variable G3_bin
+modelo_logit <- glm(G3_bin ~ sex + address + studytime + failures + absences + higher + internet, 
+                    data = train_data, 
+                    family = binomial(link = "logit"))
+
+# Resumen del modelo
+summary(modelo_logit)
+
+# Extracción de las Odds Ratios (Exponencial de los coeficientes) e Intervalos de Confianza
+odds_ratios <- exp(cbind(OR = coef(modelo_logit), confint(modelo_logit)))
+
+as.data.frame(odds_ratios) |>
+  mutate(across(everything(), ~ round(.x, 3))) |>
+  kable(caption = "Odds Ratios del Modelo Logístico") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which(odds_ratios[,1] < 1), background = "#fef9e7") |>
+  row_spec(which(odds_ratios[,1] > 1), background = "#d5f5e3")
+```
+
+**Interpretación de las Odds Ratios (OR):** El modelo muestra que variables como los fracasos previos (failures) tienen un impacto negativo y significativo en la probabilidad de aprobar. Al observar las Odds Ratios, vemos que por cada suspenso previo, las probabilidades de aprobar se reducen drásticamente (OR \< 1). Por el contrario, el deseo de cursar estudios superiores (higheryes) multiplica a favor las probabilidades de éxito (OR \> 1).
+
+Como podemos apreciar, el deseo de cursar estudios universitarios y vivir en una zona urbana son los dos factores más significativos del modelo, los suspensos previos es un factor de riesgo a la hora de aprobar, y el tiempo de estudio, las ausencias en clase, el género del alumno y el acceso a internet son los factores no significativos del modelo.
+
+### Diagnóstico del Modelo Logístico (Análisis de Residuos)
+
+Para evaluar si la estructura básica de nuestro modelo logístico es adecuada, realizaremos un análisis visual de los residuos. En los Modelos Lineales Generalizados, los residuos "crudos" no son homocedásticos. Por ello, el temario de referencia indica que la herramienta fundamental para la inspección visual es el gráfico de los residuos deviance frente al predictor lineal.
+
+```{r mrg-logistica-residuos, fig.height=5, warning=FALSE, message=FALSE}
+# Extraemos el predictor lineal (link) y los residuos deviance recomendados 
+df_res_logit <- data.frame( 
+  Predictor_Lineal = predict(modelo_logit, type = "link"), 
+  Residuos_Deviance = residuals(modelo_logit, type = "deviance"), 
+  Clase_Real = train_data$G3_bin )
+
+# Gráfico de Residuos vs Predictor Lineal
+ggplot(df_res_logit, aes(x = Predictor_Lineal, y = Residuos_Deviance)) +
+  geom_point(aes(color = Clase_Real), alpha = 0.5, size = 2) +
+  geom_hline(yintercept = 0, color = "#e74c3c", linewidth = 1.2) +
+  geom_smooth(method = "loess", color = "#2c3e50", se = FALSE, linetype = "dashed", linewidth = 1) +
+  scale_color_manual(values = c("Suspendido" = "#e74c3c", "Aprobado" = "#2ecc71")) +
+  labs(title = "Diagnóstico: Residuos Deviance vs. Predictor Lineal",
+       subtitle = "Línea roja: residuo cero | Línea negra discontinua: tendencia suavizada (LOESS)",
+       x = expression(paste("Predictor Lineal (", hat(eta), ")")), 
+       y = "Residuos Deviance",
+       color = "Estado Real") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "bottom")
+```
+
+Como hemos visto en la teoría de diagnóstico de los Modelos de Regresión Generalizada, utilizamos los residuos deviance porque su distribución se aproxima mejor a la normalidad y presentan una varianza más estable.
+
+En un modelo de clasificación binaria, es normal observar los datos divididos en dos bandas (la superior correspondiente a los alumnos aprobados y la inferior a los suspendidos).
+
+Nuestro objetivo principal al observar este gráfico es verificar la línea de tendencia suavizada (LOESS). La teoría indica que la presencia de un patrón curvilíneo marcado sería una señal clara de que la forma funcional del modelo o la función de enlace están mal especificadas. Como podemos observar en nuestro gráfico, la línea de tendencia negra se mantiene relativamente plana y cercana a la línea del cero a lo largo del eje horizontal, lo que confirma que no hay violaciones graves de la estructura del modelo y que la especificación del enlace logit es apropiada para nuestros datos.
+
+## Regresión de Poisson y Evaluación de Sobredispersión
+
+Vamos a intentar predecir la nota exacta teniendo en cuenta que la estaremos tratando como una variable de conteo. Para esto usamos la familia Poisson, con el logaritmo neperiano como función de enlace:
+
+$$\log(\lambda) = \beta_0 + \beta_1 X_1 + \dots + \beta_k X_k$$
+
+```{r mrg-poisson}
+# Ajuste del modelo de Regresión de Poisson
+modelo_poisson <- glm(G3 ~ sex + studytime + failures + absences + Medu + Fedu + famrel, 
+                      data = train_data,  
+                      family = poisson(link = "log"))
+
+summary(modelo_poisson)
+
+# Comprobación de sobredispersión (Devianza residual / Grados de libertad)
+sobredispersion <- modelo_poisson$deviance / modelo_poisson$df.residual
+cat("Ratio de Sobredispersión:", round(sobredispersion, 3), "\n")
+
+# Extracción de los Incidence Rate Ratios (IRR) e Intervalos de Confianza
+irr_poisson <- exp(cbind(IRR = coef(modelo_poisson), confint(modelo_poisson)))
+
+as.data.frame(irr_poisson) |>
+  mutate(across(everything(), ~ round(.x, 3))) |>
+  kable(caption = "Incidence Rate Ratios (IRR) del Modelo Poisson") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which(irr_poisson[,1] < 1), background = "#fef9e7") |>
+  row_spec(which(irr_poisson[,1] > 1), background = "#d5f5e3")
+```
+
+**Interpretación del Ratio de Sobredispersión:** La regresión de Poisson asume que la media y la varianza son iguales. Al calcular el Ratio de Sobredispersión, si el valor es cercano a 1, el modelo de Poisson es adecuado.En caso contrario, si el ratio es mucho mayor que 1, significa que hay sobredispersión en los datos y significa que otro modelo nos podría ayudar más en cara a nuestro estudio.
+
+En este caso, vemos como el Ratio de Sobredispersión es superior a 1, y tenemos un ligero problema de sobredispersión, que significa que hay más varianza en los datos que la que asume el modelo. Esto provoca que los errores estándar calculados sean artificialmente bajos, llevándonos a creer que ciertas variables son significativas cuando en realidad no lo son.
+
+**Interpretación de los Incidence Rate Ratios (IRR):** Dado que los coeficientes del modelo de Poisson están en una escala logarítmica, debemos exponenciarlos para interpretarlos de forma práctica. El resultado es el IRR, un factor multiplicativo. Si el IRR \> 1, la nota esperada aumenta ; si el IRR \< 1, la nota esperada disminuye. Por ejemplo, observamos que las ausencias (absences) o los suspensos previos (failures) tienen un IRR menor a 1, lo que indica que, por cada unidad que aumentan, la calificación final del alumno sufre una penalización proporcional.
+
+Como podemos apreciar, el tiempo de estudio es un factor significativo que aumenta la nota, los suspensos previos y el género masculino es un factor de riesgo a la hora de aprobar, y la educación de los progenitores, las ausencias en clase y las relaciones familiares son los factores no significativos del modelo.
+
+### Diagnóstico del Modelo de Poisson (Análisis de Residuos)
+
+Al igual que hicimos con el modelo logístico, evaluaremos la especificación del modelo de Poisson utilizando los residuos deviance frente al predictor lineal.
+
+```{r}
+# Extraemos el predictor lineal y los residuos deviance
+df_res_poisson <- data.frame(
+  Predictor_Lineal = predict(modelo_poisson, type = "link"),
+  Residuos_Deviance = residuals(modelo_poisson, type = "deviance"),
+  Nota_Real = train_data$G3
+)
+
+# Gráfico de Residuos vs Predictor Lineal
+ggplot(df_res_poisson, aes(x = Predictor_Lineal, y = Residuos_Deviance)) +
+  geom_point(aes(color = Nota_Real), alpha = 0.6, size = 2) +
+  scale_color_viridis_c(option = "plasma", name = "Nota (G3)") +
+  geom_hline(yintercept = 0, color = "#e74c3c", linewidth = 1.2) +
+  geom_smooth(method = "loess", color = "#2c3e50", se = FALSE, linetype = "dashed", linewidth = 1) +
+  labs(title = "Diagnóstico: Residuos Deviance vs. Predictor Lineal (Poisson)",
+       subtitle = "Línea roja: residuo cero | Línea negra discontinua: tendencia suavizada (LOESS)",
+       x = expression(paste("Predictor Lineal (", hat(eta), ")")), 
+       y = "Residuos Deviance") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "right")
+```
+
+El gráfico nos muestra que aunque la línea no hace curvas raras, vemos que los puntos están muy esparcidos hacia arriba y hacia abajo. Esto cuadra perfectamente con el cálculo numérico que hicimos antes, tenemos un problema de sobredispersión. Básicamente, las notas reales varían mucho más de lo que permite el modelo de Poisson (que asume estrictamente que la media y la varianza son iguales).
+
+El problema que nos causa es que al haber tanta dispersión "extra", no nos podemos fiar del todo de los p-valores y los errores que ha calculado el modelo, nos podría estar engañando haciéndonos creer que una variable es clave cuando quizás no lo es. Para arreglar esto, necesitamos pasarnos a un modelo más flexible que sí sepa manejar esto, como la Regresión Binomial Negativa.
+
+## Corrección con Modelo Binomial Negativo
+
+Para solucionar la sobredispersión detectada en el modelo de Poisson sin perder la interpretabilidad de la regresión de conteo, ajustaremos un modelo de Regresión Binomial Negativa. Este modelo flexibiliza la restricción de varianza introduciendo un nuevo parámetro de dispersión $\theta$ que nos permite obtener errores estándar precisos y evaluar correctamente la significatividad de nuestras variables.
+
+```{r}
+# Ajuste del modelo de Regresión Binomial Negativa
+modelo_nb <- glm.nb(G3 ~ sex + studytime + failures + absences + Medu + Fedu + famrel, 
+                    data = train_data)
+
+summary(modelo_nb)
+
+# Comparación de modelos mediante AIC
+comparacion_glm <- data.frame(
+  Modelo = c("Poisson", "Binomial Negativa"),
+  AIC = c(AIC(modelo_poisson), AIC(modelo_nb)))
+
+comparacion_glm |>
+  kable(caption = "Comparación AIC: Poisson vs Binomial Negativa") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Extracción de IRR para el modelo Binomial Negativo
+irr_nb <- exp(cbind(IRR = coef(modelo_nb), confint(modelo_nb)))
+
+as.data.frame(irr_nb) |>
+  mutate(across(everything(), ~ round(.x, 3))) |>
+  kable(caption = "Incidence Rate Ratios (IRR) del Modelo Binomial Negativo") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which(irr_nb[,1] < 1), background = "#fef9e7") |>
+  row_spec(which(irr_nb[,1] > 1), background = "#d5f5e3")
+```
+
+**Análisis del Modelo Binomial Negativo:** Para asegurar la robustez de nuestras estimaciones, ajustamos un modelo Binomial Negativo buscando corregir una posible sobredispersión. Sin embargo, al comparar los modelos mediante el Criterio de Información de Akaike (AIC), observamos que el modelo de Poisson presenta un valor ligeramente inferior (2089.20 frente a 2091.20). Esto indica que no existe una sobredispersión lo suficientemente severa como para justificar la complejidad adicional del modelo Binomial Negativo. De hecho, al no haber exceso de varianza, el parámetro de dispersión estimado es prácticamente nulo, provocando que el modelo Binomial Negativo converja hacia los mismos resultados (IRR e Intervalos de Confianza) que la regresión de Poisson original. Por el principio de parsimonia, concluimos que el modelo de Poisson original era adecuado para este conjunto de datos.
+
+## Conclusiones de Modelación Generalizada
+
+Como hemos podido comprobar, la regresión logística nos muestra que es altamente efectiva para evaluar el riesgo de suspenso académico de un estudiante, destacando que el peso de los fracasos académicos, el ausentismo y la ambición de acceder a la educación superior son los predictores sociológicos más determinantes en el éxito de la asignatura.
+
+Por otro lado, la regresión de poisson, nos muestra ciertas limitaciones ligadas a la sobredispersión de los datos.Al aplicar la regresión Binomial Negativa, no logramos reducir el AIC y concluimos que el parámetro de dispersión es prácticamente nulo y que los datos se ajustan correctamente a la equidispersión de Poisson.
+
+Desde un punto de vista metodológico, el mejor enfoque para la intervención escolar es la Regresión Logística. Al centrarse en la probabilidad de éxito/fracaso, el modelo ofrece una interpretación más directa para el centro escolar, no solo predice una nota, sino que identifica las barreras sociales y académicas que deben eliminarse para garantizar que el mayor número de alumnos supere la asignatura.
+
+# Comparación y Evaluación Final de Modelos
+
+En esta sección final, pondremos a prueba los mejores modelos desarrollados a lo largo del estudio utilizando el conjunto de datos de prueba (test_data), el cual reservamos al inicio y no ha sido visto por los modelos durante su entrenamiento. Esto nos permitirá evaluar su verdadera capacidad de generalización ante datos nuevos.
+
+Abordaremos la evaluación desde nuestros tres enfoques analíticos: el modelo de regresión simple, la predicción exacta de la nota (Regresión Múltiple) y la predicción del éxito académico (Regresión Generalizada).
+
+## Evaluación del Modelo de Regresión Simple
+
+Evaluamos el modelo de regresión simple que realizamos previamente con los nuevos datos de prueba:
+
+```{r slr-evaluation}
+# Evaluación del modelo lineal simple (mejor según AIC)
+pred_val_slr  <- predict(slr_model, newdata = val_data)
+pred_test_slr <- predict(slr_model, newdata = test_data)
+
+metrics_slr <- data.frame(
+  Conjunto = c("Validación", "Test"),
+  RMSE     = c(sqrt(mean((val_data$G3  - pred_val_slr)^2)),
+               sqrt(mean((test_data$G3 - pred_test_slr)^2))),
+  MAE      = c(mean(abs(val_data$G3  - pred_val_slr)),
+               mean(abs(test_data$G3 - pred_test_slr))),
+  R2       = c(cor(val_data$G3,  pred_val_slr)^2,
+               cor(test_data$G3, pred_test_slr)^2)
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+metrics_slr |>
+  kable(caption = "Métricas del modelo de regresión lineal simple") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Gráfico predicciones vs reales (test)
+ggplot(data.frame(Real = test_data$G3, Pred = pred_test_slr),
+       aes(x = Real, y = Pred)) +
+  geom_point(alpha = 0.6, color = "#2c3e50", size = 2) +
+  geom_abline(slope = 1, intercept = 0, color = "#e74c3c",
+              linewidth = 1.2, linetype = "dashed") +
+  geom_smooth(method = "lm", color = "#3498db", se = FALSE) +
+  labs(title = "Predicciones vs Valores Reales — Test (Regresión Simple)",
+       subtitle = "Línea roja: predicción perfecta",
+       x = "Valores reales (G3)", y = "Valores predichos") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Conclusión de la Evaluación del Modelo Simple:**Los resultados obtenidos en los conjuntos de validación y test confirman la excepcional capacidad predictiva de este modelo univariante. Al analizar las métricas, el R² demuestra que la calificación del segundo trimestre (G2) es capaz de explicar por sí sola la mayoría de la varianza de la nota final (G3) en datos no vistos, lo que refleja una capacidad de generalización sobresaliente y la ausencia de sobreajuste (overfitting).
+
+Asimismo, los errores de predicción (tanto el RMSE como el MAE) son notablemente bajos. En la práctica, esto significa que el modelo se equivoca, en promedio, en aproximadamente un punto sobre la calificación real del alumno (en una escala de 0 a 20).
+
+Esta precisión se aprecia claramente en el gráfico de dispersión, los valores predichos se agrupan de manera estrecha y consistente a lo largo de la línea roja discontinua (que representa el escenario de predicción perfecta, donde la predicción es igual a la realidad). Además, la línea de ajuste empírica (azul) se solapa de forma casi exacta con la diagonal ideal. En conclusión, este análisis demuestra empíricamente que el rendimiento previo a corto plazo es el indicador más robusto y fiable para pronosticar el éxito escolar final.
+
+## Evaluación del Modelo de Regresión Múltiple (Predicción Numérica)
+
+Durante la fase de regresión múltiple y regularización, determinamos que el Modelo Lasso (1SE) era la opción óptima por su equilibrio entre bajo error y gran simplicidad (seleccionó únicamente las variables G1 y G2).
+
+Vamos a calcular las métricas definitivas de este modelo sobre el conjunto de test.
+
+```{r eval-regression}
+# Predicciones del modelo Lasso 1SE sobre el conjunto de test
+# Nota: X_test y y_test se definieron en el apartado de regularización
+pred_test_lasso <- predict(lasso_model, s = lambda_lasso_1se, newx = X_test)
+
+# Cálculo de métricas
+rmse_lasso <- sqrt(mean((pred_test_lasso - y_test)^2))
+mae_lasso  <- mean(abs(pred_test_lasso - y_test))
+# R-cuadrado en test (Correlación al cuadrado entre real y predicho)
+r2_lasso   <- cor(y_test, pred_test_lasso)^2
+
+# Tabla de métricas
+metricas_reg <- data.frame(
+  Métrica = c("RMSE (Raíz del Error Cuadrático Medio)", 
+              "MAE (Error Absoluto Medio)", 
+              "R² (Coef. de Determinación)"),
+  Valor = c(rmse_lasso, mae_lasso, r2_lasso)
+) |>
+  mutate(Valor = round(Valor, 4))
+
+metricas_reg |>
+  kable(caption = "Rendimiento del Modelo Lasso en Test") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Gráfico de Valores Reales vs Predichos
+df_plot_reg <- data.frame(Real = y_test, Predicho = as.vector(pred_test_lasso))
+
+ggplot(df_plot_reg, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.6, color = "#2c3e50", size = 2) +
+  geom_abline(slope = 1, intercept = 0, color = "#e74c3c", linewidth = 1.2, linetype = "dashed") +
+  geom_smooth(method = "lm", color = "#3498db", se = FALSE) +
+  labs(title = "Rendimiento en Test: Valores Reales vs. Predichos (Lasso 1SE)",
+       subtitle = "La línea roja discontinua representa la predicción perfecta",
+       x = "Nota Final Real (G3)", y = "Nota Final Predicha") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Conclusión de la Regresión:** El modelo Lasso (1SE) logra explicar una gran parte de la varianza en datos no vistos (R² alto) con un error medio absoluto (MAE) muy bajo.
+
+Si observamos el gráfico de dispersión, la línea roja discontinua representa el caso perfecto (donde la predicción coincide exactamente con la realidad). La fuerte agrupación de los puntos grises alrededor de esta línea ideal demuestra visualmente el alto valor del R². Además, la línea azul de nuestro modelo se solapa casi a la perfección con la diagonal ideal en el grueso de las notas. Los ligeros desvíos o mayor dispersión que se aprecian en los extremos (notas muy bajas o excepcionalmente altas) son normales, ya que el modelo tiende a ser más conservador en esos rangos.
+
+En conclusión, este análisis confirma el acierto de haber usado la regularización Lasso: al penalizar y eliminar el resto de variables sociodemográficas, el modelo evitó el sobreajuste y demostró que la evaluación continua (G1 y G2) es un indicador tan robusto que basta por sí solo para construir un modelo parsimonioso pero tremendamente preciso.
+
+## Evaluación del Modelo de Clasificación (Regresión Logística)
+
+En nuestro análisis sociológico, excluimos las notas parciales para entender qué factores impactan en la probabilidad de aprobar o suspender. Utilizaremos el modelo de Regresión Logística para predecir sobre el conjunto de test y evaluaremos su rendimiento mediante una Matriz de Confusión y la Curva ROC.
+
+-   **La Matriz de Confusión:** Es una tabla que desglosa los aciertos y errores del modelo al comparar sus predicciones con la realidad. Nos permite ver de un vistazo no solo los éxitos (Verdaderos Positivos y Verdaderos Negativos), sino también el tipo de error que estamos cometiendo: Falsos Positivos (predecir que un alumno aprueba cuando en realidad suspende, el error más crítico en este contexto escolar) y Falsos Negativos (predecir que suspende cuando en realidad aprueba).
+
+-   **La Curva ROC y el AUC:** La Curva ROC evalúa visualmente la capacidad del modelo para distinguir entre ambas clases (Aprobados y Suspendidos) a medida que variamos nuestro umbral de exigencia. El AUC (Área Bajo la Curva) resume este gráfico en una puntuación: un valor de 0.5 equivale a clasificar al azar (como lanzar una moneda), mientras que 1 representa un modelo perfecto. En la práctica, un AUC cercano o superior a 0.7 indica un poder de discriminación bastante importante.
+
+```{r}
+# Predicción de probabilidades en test
+prob_test_logit <- predict(modelo_logit, newdata = test_data, type = "response")
+
+# Convertir probabilidades a clases (Umbral 0.5)
+clase_pred_logit <- ifelse(prob_test_logit > 0.5, "Aprobado", "Suspendido")
+clase_pred_logit <- factor(clase_pred_logit, levels = c("Suspendido", "Aprobado"))
+
+# Generar la Matriz de Confusión usando la librería caret
+matriz_conf <- confusionMatrix(data = clase_pred_logit, 
+                               reference = test_data$G3_bin, 
+                               positive = "Aprobado")
+
+# Extraer métricas clave para la tabla
+metricas_clf <- data.frame(
+  Métrica = c("Exactitud (Accuracy)", "Sensibilidad (Recall Aprobados)", "Especificidad (Recall Suspendidos)"),
+  Valor = c(matriz_conf$overall["Accuracy"], 
+            matriz_conf$byClass["Sensitivity"], 
+            matriz_conf$byClass["Specificity"])
+) |>
+  mutate(Valor = round(Valor, 4))
+
+metricas_clf |>
+  kable(caption = "Métricas de Evaluación - Regresión Logística") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Mostrar la matriz de confusión directamente
+matriz_conf$table
+
+# Cálculo y visualización de la Curva ROC
+# Aseguramos que la librería pROC está cargada
+library(pROC)
+
+# Crear el objeto ROC
+roc_obj <- roc(response = test_data$G3_bin, predictor = prob_test_logit, 
+               levels = c("Suspendido", "Aprobado"))
+auc_val <- auc(roc_obj)
+
+# Graficar
+ggroc(roc_obj, color = "#2c3e50", linewidth = 1.2) +
+  geom_abline(slope = 1, intercept = 1, color = "#e74c3c", linetype = "dashed") +
+  annotate("text", x = 0.25, y = 0.25, 
+           label = paste("AUC =", round(auc_val, 3)), 
+           size = 5, color = "#3498db", fontface = "bold") +
+  labs(title = "Curva ROC - Modelo de Regresión Logística",
+       subtitle = "Evaluación de la capacidad de discriminación del modelo",
+       x = "Especificidad", y = "Sensibilidad") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Conclusión de Clasificación:** A diferencia del modelo numérico, aquí nos enfrentábamos al reto sociológico de predecir el éxito escolar sin tener en cuenta el rendimiento previo (G1 y G2).
+
+Por un lado, la Matriz de Confusión nos permite desglosar exactamente dónde acierta y dónde falla el modelo. Aunque la exactitud (Accuracy) nos da el porcentaje global de aciertos, la sensibilidad (capacidad de detectar a los que aprueban) y la especificidad (capacidad de detectar a los que suspenden) son vitales en el ámbito educativo. En este contexto, un Falso Positivo (predecir que un alumno va a aprobar cuando en realidad va a suspender) es el error más costoso, ya que ese estudiante se quedaría sin recibir el apoyo temprano que necesita.
+
+Por otro lado, la Curva ROC confirma visualmente la capacidad de error del modelo. La diagonal discontinua de color rojo representa un clasificador aleatorio (AUC = 0.5). Cuanto más se eleva y aleja nuestra curva negra hacia la esquina superior izquierda, mejor logra nuestro modelo separar a los alumnos aptos de los no aptos. Un AUC superior a 0.70 nos indica un poder discriminativo bastante importante.
+
+En conclusión, esto demuestra que, basándonos en factores sociológicos, académicos y de comportamiento (como el número de suspensos históricos, las ausencias o el deseo de cursar educación superior), el centro educativo tiene las herramientas necesarias para identificar tempranamente a los estudiantes en riesgo de exclusión académica, mucho antes de que realicen su primer examen.
+
+# Conclusiones y Trabajo Futuro
+
+## Hallazgos en el EDA
+
+El Análisis Exploratorio de Datos demostró que el rendimiento escolar posee una gran importancia, las notas parciales (G1 y G2) dictan la trayectoria final del alumno con un margen de error mínimo. Sin embargo, al aislar los factores sociales, el análisis cuestionó el peso de la estructura familiar (convivencia de los padres o tamaño de la familia), revelando que los verdaderos factores del éxito son el nivel educativo y profesión de los progenitores y la actitud conductual del estudiante. Concretamente, arrastrar un historial de suspensos previos actúa como el principal problema hacia el fracaso, mientras que incrementar el tiempo de estudio y la ambición a estudios superiores consiguen elevar el rendimiento académico.
+
+## Hallazgos en la Regresión Lineal Simple
+
+El análisis univariante confirmó que el rendimiento escolar posee una altísima continuidad, posicionando la calificación del segundo trimestre como el predictor individual más robusto de la nota final. El modelo logró explicar prácticamente el 84% de la varianza con un cumplimiento estricto de los supuestos teóricos (linealidad, homocedasticidad y normalidad de los residuos) y demostró una total estabilidad estructural frente a valores atípicos. Asimismo, la evaluación de transformaciones polinómicas afirmó el Principio de Parsimonia: la trayectoria académica del estudiante sigue un patrón puramente lineal, demostrando que no es necesario incurrir en mayor complejidad matemática para predecir el éxito a corto plazo con un altísimo grado de precisión.
+
+## Hallazgos en la Regresión Lineal Múltiple
+
+Mediante la aplicación de técnicas de selección de variables y regularización avanzada, el modelo Lasso demostró que la complejidad no es un requisito para la precisión. El algoritmo logró reducir dataset inicial de 67 predictores a únicamente dos variables (G1 y G2), reduciendo en gran parte el riesgo de sobreajuste. El diagnóstico del modelo confirmó una ausencia total de multicolinealidad y validó la linealidad de los predictores. Si bien los test detectaron desviaciones en la normalidad y homocedasticidad de los residuos, el análisis de influencia mediante la Distancia de Cook y DFBETAS demostró que estas anomalías no tienen la fuerza necesaria para sesgar los coeficientes. En definitiva, el modelo multivariante destaca por su gran estabilidad estructural, confirmando que la trayectoria de las evaluaciones continuas es suficiente para construir un sistema predictivo altamente fiable.
+
+## Hallazgos de la Regresión Generalizada
+
+Al omitir intencionadamente las calificaciones parciales para aislar el contexto social del alumno, el análisis demostró que predecir el éxito escolar como un problema binario (Aprobado/Suspenso) mediante Regresión Logística es la mejor estrategia metodológica. Mientras que los modelos de conteo (Poisson y Binomial Negativa) revelaron limitaciones prácticas para predecir la calificación exacta, el modelo logístico consiguió predecir con éxito al estudiante en riesgo, confirmando que la falta de ambición universitaria y la acumulación de suspensos previos son barreras importantes a la hora de aprobar la asignatura.
+
+## Conclusión de los Mejores Modelos
+
+Determinar cuál de los tres enfoques evaluados es el "mejor" tenemos que definir cuál es el objetivo final del análisis. Si nos guiamos por la precisión matemática, el Modelo de Regresión Múltiple (Lasso 1SE) y por tanto, la Regresión Simple serían los mejores. Ambos logran explicar la mayor parte de la varianza con errores mínimos. Sin embargo, presentan una limitación práctica, su alta precisión se basa en una relación casi por redundancia (las notas predicen las notas finales). Saber que un estudiante tendrá una buena calificación final porque ya tiene una buena calificación en el trimestre anterior tiene un valor preventivo limitado.
+
+Por ello, desde una perspectiva de utilidad pedagógica, el mejor modelo de este estudio es el Modelo de Regresión Logística. Esta elección se fundamenta en tres pilares clave:
+
+-   **Anticipación preventiva:** Al prescindir de las calificaciones parciales (G1 y G2), el modelo logístico es capaz de perfilar el riesgo del estudiante desde el primer día de clase. No obliga al profesorado a esperar a que el alumno fracase en un examen parcial para actuar.
+-   **Claridad para la toma de decisiones:** Sus métricas (las Odds Ratios) traducen factores abstractos en riesgos concretos. Identificar matemáticamente que el historial de suspensos o la ausencia de metas universitarias reducen considerablemente las probabilidades de éxito permite al centro educativo pasar del análisis a la acción, realizando tutorías personalizadas.
+-   **Contribución a los objetivos del centro escolar:** En la educación secundaria, distinguir entre un alumno que sacará un 14 y uno que sacará un 15 tiene menor relevancia. El verdadero reto de una institución pública es evitar el abandono y ayudar con la superación de las competencias mínimas. El modelo logístico, con un AUC robusto, ayuda directamente a este problema binario.
+
+## Trabajo Futuro
+
+A partir de los hallazgos de este proyecto, se proponen las siguientes líneas de mejora e investigación futura:
+
+-   **Exploración de Relaciones No Lineales:** Dado que la regresión logística y lineal asumen relaciones aditivas, sería curioso aplicar algoritmos basados en árboles de decisión. Estos modelos podrían capturar interacciones complejas e intrínsecas.
+
+-   **Mejorar el Dataset:** Para mejorar el estudio sin depender de las notas previas (G1 y G2), el futuro del proyecto pasaría por integrar variables sobre los alumnos (niveles de motivación, ansiedad ante exámenes, estilo de aprendizaje) y datos acerca de en qué semanas del curso se producen las faltas para detectar patrones.
+
+-   **Análisis Comparativo entre Disciplinas:** El dataset original de Cortez y Silva incluye también los registros de la asignatura de Matemáticas. Replicar este modelo con dichos datos permitiría realizar un estudio comparativo y descubrir si los factores sociodemográficos que penalizan a un alumno en humanidades (Portugués) son los mismos que le afectan en las ciencias.
+
+-   **Desarrollo de un Sistema de Alerta Temprana:** Desde una perspectiva de aplicabilidad práctica, el modelo de regresión logística desarrollado podría integrarse en el software de gestión del centro educativo. Al introducir los datos sociodemográficos y de asistencia del alumno a principios de curso, el sistema podría calcular su probabilidad de suspenso, permitiendo a los tutores realizar intervenciones pedagógicas preventivas antes de que se produzca el fracaso escolar.
+
+## Referencias
+
+-   Cortez, P., & Silva, A. (2008). *Using data mining to predict secondary school student performance*. In A. Brito & J. Teixeira (Eds.), Proceedings of 5th Annual Future Business Technology Conference, Porto, Portugal, pp. 5-12.
+-   UCI Machine Learning Repository: [Student Performance Dataset](https://archive.ics.uci.edu/dataset/320/student+performance)
+-   James, G., Witten, D., Hastie, T., & Tibshirani, R. (2021). *An Introduction to Statistical Learning with Applications in R* (2nd ed.). Springer.
+-   Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
+
+# Reparto del Trabajo
+
+-   Javier Ugena García: ha realizado los dos primeros puntos, que constan de la preparación de los datos, el análisis exploratorio de los datos y la regresión lineal simple.
+
+-   Elba Jares Darriba: ha realizado el tercer punto que consiste en realizar la regresión lineal múltiple, seleccionando el mejor modelo a partir de métodos de selección de variables y técnicas de regularización, y realizando un diagnóstico de la multicolinealidad, los residuos y la influencia de valores atípicos a partir del modelo seleccionado.
+
+-   Soraya Burgos Modrego: ha realizado los tres últimos puntos, donde están los modelos de regresión generalizada, ha comparado y evaluado los distintos modelos obtenidos anteriormente (añadiendo la evaluación en test y validation), y ha redactado las conclusiones junto con las propuestas de trabajo a futuro.
